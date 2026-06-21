@@ -7,15 +7,32 @@ program AppMain;
 uses
     Math, Windows, SysUtils, webview, AppConfig, AppLaunch;
 
+const
+    // Shown immediately while services start, so the window never looks frozen.
+    SPLASH_HTML =
+        '<!doctype html><meta charset="utf-8">' +
+        '<body style="margin:0;height:100vh;display:flex;align-items:center;' +
+        'justify-content:center;background:#1e1e1e;color:#dddddd;' +
+        'font-family:Segoe UI,sans-serif">' +
+        '<div style="text-align:center">' +
+        '<div style="font-size:22px">Starting...</div>' +
+        '<div style="font-size:13px;opacity:.6;margin-top:8px">' +
+        'launching servers, please wait</div></div></body>';
+
 var
     wnd: HWND;
     i: Integer;
     w: PWebView;
+    tid: DWORD;
     cfg: TAppConfig;
     cfgErr: string;
     startUrl: string;
     configPath: string;
     defaultCfg: string;
+    gWebView: PWebView;       // shared with the startup thread
+    gConfig: TAppConfig;      // shared with the startup thread
+    gStartUtf8: UTF8String;   // resolved target URL (UTF-8), opened once ready
+    useServices: Boolean;
     useFullScreen: Boolean;
     fullScreenForced: Boolean;
 
@@ -31,6 +48,15 @@ begin
 end;
 
 {*******************************************************************************
+* fail
+*******************************************************************************}
+procedure fail(const aMsg: string);
+begin
+    MessageBoxW(0, PWideChar(aMsg), 'AppCore Error', MB_OK or MB_ICONERROR);
+    Halt(1);
+end;
+
+{*******************************************************************************
 * handleExit
 * Bound JS callback: terminates the run loop. WebView2's window.close() only
 * raises WindowCloseRequested, which the webview library does not handle, so a
@@ -39,15 +65,6 @@ end;
 procedure handleExit(const aSeq: PAnsiChar; const aReq: PAnsiChar; aArg: Pointer); cdecl;
 begin
     webview_terminate(PWebView(aArg));
-end;
-
-{*******************************************************************************
-* fail
-*******************************************************************************}
-procedure fail(const aMsg: string);
-begin
-    MessageBoxW(0, PWideChar(aMsg), 'AppCore Error', MB_OK or MB_ICONERROR);
-    Halt(1);
 end;
 
 {*******************************************************************************
@@ -93,6 +110,28 @@ begin
     waitForPort(aCfg.ReadyPort, aCfg.ReadyTimeoutSec);
 end;
 
+{*******************************************************************************
+* navigateWhenReady
+* Runs on the GUI thread (via webview_dispatch) once services are up: switches
+* the window from the splash page to the real application URL.
+*******************************************************************************}
+procedure navigateWhenReady(aWebView: PWebView; aArg: Pointer); cdecl;
+begin
+    webview_navigate(aWebView, PAnsiChar(gStartUtf8));
+end;
+
+{*******************************************************************************
+* startupThread
+* Worker thread: starts the services and waits for readiness off the GUI thread,
+* then asks the GUI thread to navigate to the application URL.
+*******************************************************************************}
+function startupThread(aParam: Pointer): DWORD; stdcall;
+begin
+    startServices(gConfig);
+    webview_dispatch(gWebView, @navigateWhenReady, nil);
+    Result := 0;
+end;
+
 begin
     SetExceptionMask([exInvalidOp, exDenormalized, exZeroDivide,
                       exOverflow, exUnderflow, exPrecision]);
@@ -124,20 +163,24 @@ begin
             configPath := defaultCfg;
     end;
 
-    if configPath <> '' then
+    useServices := configPath <> '';
+    if useServices then
     begin
         if not loadAppConfig(configPath, cfg, cfgErr) then
             fail(cfgErr);
         startUrl := cfg.StartUrl;
+        gConfig := cfg;
         if not fullScreenForced then
             useFullScreen := cfg.FullScreen;
-        startServices(cfg);
     end;
+
+    gStartUtf8 := toUtf8(startUrl);
 
     w := webview_create(WebView_NoDevTools, nil);
     if w = nil then
         fail('Failed to create WebView2 instance.'#13#10 +
             'Make sure Microsoft Edge WebView2 Runtime is installed.');
+    gWebView := w;
 
     webview_set_title(w, PAnsiChar(toUtf8('AppCore')));
 
@@ -158,7 +201,17 @@ begin
         'if(e.key==="Escape")window.__appcoreExit();' +
         '});')));
 
-    webview_navigate(w, PAnsiChar(toUtf8(startUrl)));
+    // With services, show the splash immediately and let a worker thread start
+    // the servers and navigate when ready, so the window is never invisible
+    // during the (possibly long) startup. Without services, open the URL now.
+    if useServices then
+    begin
+        webview_set_html(w, PAnsiChar(toUtf8(SPLASH_HTML)));
+        CreateThread(nil, 0, @startupThread, nil, 0, tid);
+    end
+    else
+        webview_navigate(w, PAnsiChar(gStartUtf8));
+
     webview_run(w);
     webview_destroy(w);
 end.
