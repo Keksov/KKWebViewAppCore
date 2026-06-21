@@ -2,6 +2,16 @@
 
 Fullscreen WebView2 kiosk application built with Free Pascal.
 
+## Pascal conventions (READ FIRST)
+
+Before creating or editing any `.pas` / `.pp` / `.inc` file in this project,
+read [.github/instructions/pascal.instructions.md](.github/instructions/pascal.instructions.md)
+and follow it: 4-space indentation, lowercase camelCase routine/local names,
+local declarations sorted by line length (shortest first), `a`-prefixed
+`const` parameters, `{*...*}` header banners before each routine, `FreeAndNil`
+for cleanup, and `{$IFDEF FPC}{$mode delphiunicode}{$ENDIF}` for Delphi
+compatibility.
+
 ## Build
 
 Two-step build process:
