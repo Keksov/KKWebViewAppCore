@@ -213,5 +213,9 @@ begin
         webview_navigate(w, PAnsiChar(gStartUtf8));
 
     webview_run(w);
+
+    // Window closed: stop the dev servers / build process and their console
+    // windows before tearing down the webview.
+    terminateProcessGroup;
     webview_destroy(w);
 end.
