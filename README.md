@@ -154,12 +154,20 @@ port parsed from `DevUrl`. The launched dev/server console windows run
 independently — closing the AppCore window does not stop them. A ready-to-use
 example is in [`examples/appcore.cfg`](examples/appcore.cfg).
 
+### Window controls (fullscreen)
+
+In fullscreen the window is borderless, so there are no system buttons. An
+RDP-style floating bar (minimize / restore-fullscreen / close) is pinned to the
+top-center of the screen and auto-hides — move the cursor to the top edge to
+reveal it. Closing the servers and consoles still happens on exit.
+
 ### Exit
 
 - **ESC** — handled by injected JavaScript that invokes a bound native callback
   (`webview_terminate`), since WebView2's `window.close()` alone does not close
   the host window.
 - **Alt+F4** — closes via the native `WM_CLOSE` path.
+- **Close button** on the floating bar (fullscreen) — posts `WM_CLOSE`.
 
 ## Project layout
 
@@ -167,7 +175,8 @@ example is in [`examples/appcore.cfg`](examples/appcore.cfg).
 src/
   AppMain.pas    entry point: arg parsing, service orchestration, window + ESC
   AppConfig.pas  KEY=VALUE launch-config parser (paths, mode, ports)
-  AppLaunch.pas  console process launching + TCP port readiness wait
+  AppLaunch.pas  console process launching, job-object teardown, port wait
+  AppBar.pas     RDP-style floating control bar (min / restore / close)
   webview.pas    FPC bindings to the webview C API (libwebview.dll)
 build/win_x64/
   build_webview.bat  builds libwebview.dll via CMake + MinGW

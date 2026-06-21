@@ -5,7 +5,7 @@ program AppMain;
 {$ENDIF}
 
 uses
-    Math, Windows, SysUtils, webview, AppConfig, AppLaunch;
+    Math, Windows, SysUtils, webview, AppConfig, AppLaunch, AppBar;
 
 const
     // Shown immediately while services start, so the window never looks frozen.
@@ -191,6 +191,8 @@ begin
         SetWindowPos(wnd, HWND_TOP, 0, 0,
             GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN),
             SWP_FRAMECHANGED);
+        // Borderless window has no system buttons; add an RDP-style floating bar.
+        createControlBar(wnd, True);
     end
     else
         webview_set_size(w, 1024, 768, WebView_Hint_None);
