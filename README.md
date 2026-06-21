@@ -45,7 +45,25 @@ repeated when the webview C++ sources change — day-to-day you just re-run stag
 3. Ensure the FPC toolchain is reachable at
    `..\..\..\..\KKMindWave\VendorsCore\fpc\fpc-main` (or set `FPC_EXE_x64` to a
    full path to `fpc.exe`).
-4. Install the Microsoft Edge **WebView2 Runtime** on any machine that runs the app.
+4. Install the Microsoft Edge **WebView2 Runtime** on any machine that runs the
+   app. It ships preinstalled on Windows 11 and recent Windows 10; install it
+   explicitly only if missing.
+
+   Using winget:
+   ```bat
+   winget install --id Microsoft.EdgeWebView2Runtime --exact --silent --accept-package-agreements --accept-source-agreements
+   ```
+
+   Or download and run the Evergreen Bootstrapper silently:
+   ```bat
+   curl -L -o "%TEMP%\MicrosoftEdgeWebview2Setup.exe" https://go.microsoft.com/fwlink/p/?LinkId=2124703
+   "%TEMP%\MicrosoftEdgeWebview2Setup.exe" /silent /install
+   ```
+
+   Verify it is installed (prints a version when present):
+   ```bat
+   reg query "HKLM\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" /v pv
+   ```
 
 ### Stage 1 — native webview library
 
