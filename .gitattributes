@@ -1,0 +1,4 @@
+*.pas whitespace=trailing-space,tab-in-indent,tabwidth=2
+*.inc whitespace=trailing-space,tab-in-indent,tabwidth=2
+*.bat text eol=crlf
+*.cfg text eol=crlf
