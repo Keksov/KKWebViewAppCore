@@ -28,6 +28,8 @@ Two-step build process:
    build\win_x64\build_app.bat
    ```
    Produces `build\win_x64\bin\AppMain.exe` and copies `libwebview.dll` alongside.
+   It also deploys both artifacts to `..\..\KKLeftRight\server` when that folder
+   exists (skipped with a warning otherwise).
 
 ## FPC Toolchain
 

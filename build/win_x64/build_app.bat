@@ -6,6 +6,7 @@ set "ROOT_FPC_BIN=%ROOT_FPC_HOME%\bin\x86_64-win64"
 set "CFG_FILE=%~dp0fpc-x64.cfg"
 set "WEBVIEW_DLL_DIR=%~dp0..\..\webview\build\win_x64\core"
 set "SRC_DIR=%~dp0..\..\src"
+set "DEPLOY_DIR=%~dp0..\..\..\KKLeftRight\server"
 
 set "FPC=%ROOT_FPC_BIN%\fpc.exe"
 if defined FPC_EXE_x64 (
@@ -55,6 +56,14 @@ if %ERRORLEVEL% neq 0 (
 
 echo Copying libwebview.dll to bin...
 copy /Y "%WEBVIEW_DLL_DIR%\libwebview.dll" bin\ >nul
+
+if exist "%DEPLOY_DIR%\" (
+    echo Deploying artifacts to KKLeftRight\server...
+    copy /Y bin\AppMain.exe "%DEPLOY_DIR%\" >nul
+    copy /Y bin\libwebview.dll "%DEPLOY_DIR%\" >nul
+) else (
+    echo WARNING: deploy target not found, skipping: %DEPLOY_DIR%
+)
 
 popd
 echo.
