@@ -12,6 +12,7 @@ var
   fullScreenForced: Boolean;
   startUrl: AnsiString;
   configPath: AnsiString;
+  defaultCfg: AnsiString;
   cfg: TAppConfig;
   cfgErr: AnsiString;
   i: Integer;
@@ -89,8 +90,17 @@ begin
     end
     else if (SameText(ParamStr(i), '-url') or SameText(ParamStr(i), '--url')) and (i < ParamCount) then
       startUrl := ParamStr(i + 1)
-    else if (SameText(ParamStr(i), '-config') or SameText(ParamStr(i), '--config')) and (i < ParamCount) then
+    else if (SameText(ParamStr(i), '-config') or SameText(ParamStr(i), '--config')
+             or SameText(ParamStr(i), '-c')) and (i < ParamCount) then
       configPath := ParamStr(i + 1);
+  end;
+
+  { No explicit config given: fall back to app.cfg next to the executable. }
+  if configPath = '' then
+  begin
+    defaultCfg := ExtractFilePath(ParamStr(0)) + 'app.cfg';
+    if FileExists(defaultCfg) then
+      configPath := defaultCfg;
   end;
 
   if configPath <> '' then

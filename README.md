@@ -112,7 +112,7 @@ build\win_x64\bin\AppMain.exe -FullScreen -url http://localhost:9000
 
 | Parameter | Argument | Default | Description |
 |-----------|----------|---------|-------------|
-| `-config` / `--config` | path (next argument) | — | Load a launch config file (see below). Starts backend/frontend services, waits for the port, then opens the resolved URL. |
+| `-config` / `--config` / `-c` | path (next argument) | `app.cfg` next to the exe, if present | Load a launch config file (see below). Starts backend/frontend services, waits for the port, then opens the resolved URL. |
 | `-FullScreen` / `--FullScreen` | none | off | Borderless window covering the whole screen (`WS_POPUP`). Without it the window is 1024×768 with normal decorations. Overrides `FullScreen` from the config. |
 | `-url` / `--url` | URL (next argument) | `http://localhost:8080` | Address to open on startup. Ignored when `-config` resolves its own URL. |
 
@@ -127,7 +127,12 @@ then opens the WebView2 window. This replaces a separate launcher script.
 
 ```bat
 build\win_x64\bin\AppMain.exe -config C:\path\to\appcore.cfg
+build\win_x64\bin\AppMain.exe -c C:\path\to\appcore.cfg
 ```
+
+If neither `-config`/`-c` is given, AppCore looks for an `app.cfg` file next to
+the executable and, when present, loads it automatically. With no config at all
+it just opens the default/`-url` address without launching any services.
 
 Relative paths inside the file are resolved against the file's own directory.
 A bare `BunExe` name (no path separator) is looked up via `PATH`.
