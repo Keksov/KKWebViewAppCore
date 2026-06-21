@@ -29,25 +29,83 @@ folders (`webview/`, `fpwebview/`) and are not tracked in this repository.
 
 ## Build
 
-Two steps — the first only needs to be repeated when the webview C++ sources change:
+The build has two stages. Stage 1 produces the native `libwebview.dll`; stage 2
+compiles the Pascal application and links against it. Stage 1 only needs to be
+repeated when the webview C++ sources change — day-to-day you just re-run stage 2.
+
+### Prerequisites checklist
+
+1. Clone the dependency sources as sibling folders inside the project root:
+   ```bat
+   git clone https://github.com/webview/webview.git      webview
+   git clone https://github.com/PierceNg/fpwebview.git    fpwebview
+   ```
+2. Ensure MSYS2 MinGW-w64 is at `c:\bin\msys64` (or set `MSYS2_ROOT_OVERRIDE`).
+   The scripts use its `gcc`, `g++`, `cmake`, `ninja`, `ar` and `ranlib`.
+3. Ensure the FPC toolchain is reachable at
+   `..\..\..\..\KKMindWave\VendorsCore\fpc\fpc-main` (or set `FPC_EXE_x64` to a
+   full path to `fpc.exe`).
+4. Install the Microsoft Edge **WebView2 Runtime** on any machine that runs the app.
+
+### Stage 1 — native webview library
 
 ```bat
-build\win_x64\build_webview.bat   :: builds webview\build\win_x64\core\libwebview.dll
-build\win_x64\build_app.bat       :: compiles bin\AppMain.exe and copies the DLL
+build\win_x64\build_webview.bat
 ```
 
-Outputs land in `build\win_x64\bin\` (`AppMain.exe` + `libwebview.dll`).
-Intermediate FPC units go to `build\win_x64\dcu\`.
+Runs CMake + Ninja with MinGW to build a shared library, linking the C++ runtime
+statically (`-static-libgcc -static-libstdc++`) and using webview's built-in
+WebView2 loader. Output: `webview\build\win_x64\core\libwebview.dll`.
+
+### Stage 2 — Pascal application
+
+```bat
+build\win_x64\build_app.bat
+```
+
+Compiles `src\AppMain.pas` with FPC as a Windows GUI app (`-WG`), then copies
+`libwebview.dll` next to the executable.
+
+| Path | Contents |
+|------|----------|
+| `build\win_x64\bin\AppMain.exe`      | the application |
+| `build\win_x64\bin\libwebview.dll`   | webview runtime (copied by stage 2) |
+| `build\win_x64\dcu\`                 | intermediate FPC units (`.ppu`/`.o`) |
+
+Both `bin\` and `dcu\` are git-ignored.
+
+### Overrides
+
+| Variable | Effect |
+|----------|--------|
+| `FPC_EXE_x64`        | full path to `fpc.exe`, bypassing the default toolchain location |
+| `MSYS2_ROOT_OVERRIDE`| MSYS2 install root used instead of `c:\bin\msys64` |
 
 ## Usage
 
 ```bat
-build\win_x64\bin\AppMain.exe                          :: windowed 1024x768
-build\win_x64\bin\AppMain.exe -FullScreen              :: fullscreen kiosk mode
+build\win_x64\bin\AppMain.exe                          :: windowed 1024x768, http://localhost:8080
+build\win_x64\bin\AppMain.exe -FullScreen              :: borderless fullscreen (kiosk)
 build\win_x64\bin\AppMain.exe -url http://example.com  :: custom start URL
+build\win_x64\bin\AppMain.exe -FullScreen -url http://localhost:9000
 ```
 
-Press **ESC** or **Alt+F4** to exit.
+### Command-line parameters
+
+| Parameter | Argument | Default | Description |
+|-----------|----------|---------|-------------|
+| `-FullScreen` / `--FullScreen` | none | off | Borderless window covering the whole screen (`WS_POPUP`). Without it the window is 1024×768 with normal decorations. |
+| `-url` / `--url` | URL (next argument) | `http://localhost:8080` | Address to open on startup. |
+
+Parameter names are case-insensitive. Unknown arguments are ignored; `-url`
+given without a following value falls back to the default URL.
+
+### Exit
+
+- **ESC** — handled by injected JavaScript that invokes a bound native callback
+  (`webview_terminate`), since WebView2's `window.close()` alone does not close
+  the host window.
+- **Alt+F4** — closes via the native `WM_CLOSE` path.
 
 ## Project layout
 
