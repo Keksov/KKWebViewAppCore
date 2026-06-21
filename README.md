@@ -112,11 +112,42 @@ build\win_x64\bin\AppMain.exe -FullScreen -url http://localhost:9000
 
 | Parameter | Argument | Default | Description |
 |-----------|----------|---------|-------------|
-| `-FullScreen` / `--FullScreen` | none | off | Borderless window covering the whole screen (`WS_POPUP`). Without it the window is 1024×768 with normal decorations. |
-| `-url` / `--url` | URL (next argument) | `http://localhost:8080` | Address to open on startup. |
+| `-config` / `--config` | path (next argument) | — | Load a launch config file (see below). Starts backend/frontend services, waits for the port, then opens the resolved URL. |
+| `-FullScreen` / `--FullScreen` | none | off | Borderless window covering the whole screen (`WS_POPUP`). Without it the window is 1024×768 with normal decorations. Overrides `FullScreen` from the config. |
+| `-url` / `--url` | URL (next argument) | `http://localhost:8080` | Address to open on startup. Ignored when `-config` resolves its own URL. |
 
 Parameter names are case-insensitive. Unknown arguments are ignored; `-url`
 given without a following value falls back to the default URL.
+
+### Launching services via a config file
+
+`-config` turns AppCore into a launcher: it reads a `KEY=VALUE` file (`#`/`;`
+comments), starts the backend and frontend, waits for the target TCP port, and
+then opens the WebView2 window. This replaces a separate launcher script.
+
+```bat
+build\win_x64\bin\AppMain.exe -config C:\path\to\appcore.cfg
+```
+
+Relative paths inside the file are resolved against the file's own directory.
+A bare `BunExe` name (no path separator) is looked up via `PATH`.
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `Mode` | `prod` | `prod` builds the UI and runs the production server; `dev` runs the server and UI dev servers, each in its own console window that **stays open** (`cmd /k`). |
+| `BunExe` | `bun` | Path to `bun`, or a bare command resolved via `PATH`. |
+| `ServerDir` | — | Backend project dir (has `dev` / `start` scripts). |
+| `UiDir` | — | Frontend project dir (has `dev` / `build` scripts). |
+| `ServerPort` | *(required)* | Backend port; the prod URL is `http://localhost:<ServerPort>/`. |
+| `DevUrl` | `http://localhost:<ServerPort>/` | URL opened in dev mode (e.g. the HMR dev server). |
+| `BuildUi` | `true` | prod only: run `bun run build` in `UiDir` before starting the server. |
+| `FullScreen` | `false` | Open the window borderless fullscreen. |
+| `ReadyTimeoutSec` | `30` | Max seconds to wait for the port before opening the window anyway. |
+
+In `prod` mode AppCore waits for `ServerPort`; in `dev` mode it waits for the
+port parsed from `DevUrl`. The launched dev/server console windows run
+independently — closing the AppCore window does not stop them. A ready-to-use
+example is in [`examples/appcore.cfg`](examples/appcore.cfg).
 
 ### Exit
 
@@ -129,12 +160,16 @@ given without a following value falls back to the default URL.
 
 ```
 src/
-  AppMain.pas    entry point: window setup, fullscreen, ESC handling
+  AppMain.pas    entry point: arg parsing, service orchestration, window + ESC
+  AppConfig.pas  KEY=VALUE launch-config parser (paths, mode, ports)
+  AppLaunch.pas  console process launching + TCP port readiness wait
   webview.pas    FPC bindings to the webview C API (libwebview.dll)
 build/win_x64/
   build_webview.bat  builds libwebview.dll via CMake + MinGW
   build_app.bat      compiles the FPC application
   fpc-x64.cfg        FPC compiler configuration (relative paths)
+examples/
+  appcore.cfg    sample launch configuration
 ```
 
 ## License

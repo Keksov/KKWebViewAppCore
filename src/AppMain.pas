@@ -3,13 +3,17 @@ program AppMain;
 {$mode objfpc}{$H+}
 
 uses
-  Math, Windows, SysUtils, webview;
+  Math, Windows, SysUtils, webview, AppConfig, AppLaunch;
 
 var
   w: PWebView;
   wnd: HWND;
   useFullScreen: Boolean;
+  fullScreenForced: Boolean;
   startUrl: AnsiString;
+  configPath: AnsiString;
+  cfg: TAppConfig;
+  cfgErr: AnsiString;
   i: Integer;
 
 { Bound JS callback: terminates the run loop. WebView2's window.close() only
@@ -20,29 +24,89 @@ begin
   webview_terminate(PWebView(arg));
 end;
 
+procedure Fail(const aMsg: AnsiString);
+begin
+  MessageBoxW(0, PWideChar(UnicodeString(aMsg)), 'AppCore Error',
+    MB_OK or MB_ICONERROR);
+  Halt(1);
+end;
+
+{ Starts backend/frontend processes described by the config, then waits for the
+  target port to become reachable. In dev mode the bun/quasar dev servers run in
+  their own console windows that stay open (cmd /k); in prod the UI is built and
+  the server started. }
+procedure StartServices(const aCfg: TAppConfig);
+var
+  exitCode: DWORD;
+  envPrefix: AnsiString;
+begin
+  if aCfg.Mode = amDev then
+  begin
+    if aCfg.ServerDir <> '' then
+      LaunchInConsole(aCfg.ServerDir,
+        '"' + aCfg.BunExe + '" run dev', 'KK Server (dev)', '', True);
+    if aCfg.UiDir <> '' then
+      LaunchInConsole(aCfg.UiDir,
+        '"' + aCfg.BunExe + '" run dev', 'KK UI (quasar dev)', '', True);
+  end
+  else
+  begin
+    if aCfg.BuildUi and (aCfg.UiDir <> '') then
+    begin
+      if not RunAndWait(aCfg.UiDir, '"' + aCfg.BunExe + '" run build',
+        'KK UI build', exitCode) then
+        Fail('Failed to start UI build (bun run build).');
+      if exitCode <> 0 then
+        Fail(Format('UI build failed (exit code %d).', [exitCode]));
+    end;
+
+    if aCfg.ServerDir <> '' then
+    begin
+      envPrefix := Format('set PORT=%d&& ', [aCfg.ServerPort]);
+      LaunchInConsole(aCfg.ServerDir,
+        '"' + aCfg.BunExe + '" run start', 'KK Server', envPrefix, False);
+    end;
+  end;
+
+  WaitForPort(aCfg.ReadyPort, aCfg.ReadyTimeoutSec);
+end;
+
 begin
   SetExceptionMask([exInvalidOp, exDenormalized, exZeroDivide,
                      exOverflow, exUnderflow, exPrecision]);
 
   useFullScreen := False;
+  fullScreenForced := False;
   startUrl := 'http://localhost:8080';
+  configPath := '';
 
   for i := 1 to ParamCount do
   begin
     if SameText(ParamStr(i), '-FullScreen') or SameText(ParamStr(i), '--FullScreen') then
-      useFullScreen := True
+    begin
+      useFullScreen := True;
+      fullScreenForced := True;
+    end
     else if (SameText(ParamStr(i), '-url') or SameText(ParamStr(i), '--url')) and (i < ParamCount) then
-      startUrl := ParamStr(i + 1);
+      startUrl := ParamStr(i + 1)
+    else if (SameText(ParamStr(i), '-config') or SameText(ParamStr(i), '--config')) and (i < ParamCount) then
+      configPath := ParamStr(i + 1);
+  end;
+
+  if configPath <> '' then
+  begin
+    if not LoadAppConfig(configPath, cfg, cfgErr) then
+      Fail(cfgErr);
+    startUrl := cfg.StartUrl;
+    if not fullScreenForced then
+      useFullScreen := cfg.FullScreen;
+    StartServices(cfg);
   end;
 
   w := webview_create(WebView_NoDevTools, nil);
   if w = nil then
-  begin
-    MessageBoxW(0, 'Failed to create WebView2 instance.'#13#10 +
-      'Make sure Microsoft Edge WebView2 Runtime is installed.',
-      'AppCore Error', MB_OK or MB_ICONERROR);
-    Halt(1);
-  end;
+    Fail('Failed to create WebView2 instance.'#13#10 +
+      'Make sure Microsoft Edge WebView2 Runtime is installed.');
 
   webview_set_title(w, PAnsiChar('AppCore'));
 
