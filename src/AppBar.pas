@@ -33,7 +33,6 @@ const
 var
     gShown: Boolean = False;
     gFull: Boolean = True;
-    gBarX: Integer = 0;
     gScreenW: Integer = 0;
     gScreenH: Integer = 0;
     gBarWnd: HWND = 0;
@@ -64,15 +63,14 @@ end;
 
 {*******************************************************************************
 * showBar
+* Positions the bar at the top-center of the main window (tracking it even when
+* not full screen) and makes it visible.
 *******************************************************************************}
-procedure showBar;
+procedure showBar(aX, aTop: Integer);
 begin
-    if not gShown then
-    begin
-        SetWindowPos(gBarWnd, HWND_TOPMOST, gBarX, 0, BAR_WIDTH, BAR_HEIGHT,
-            SWP_NOACTIVATE or SWP_SHOWWINDOW);
-        gShown := True;
-    end;
+    SetWindowPos(gBarWnd, HWND_TOPMOST, aX, aTop, BAR_WIDTH, BAR_HEIGHT,
+        SWP_NOACTIVATE or SWP_SHOWWINDOW);
+    gShown := True;
 end;
 
 {*******************************************************************************
@@ -95,26 +93,32 @@ end;
 procedure updateAutoHide;
 var
     pt: TPoint;
-    overX: Boolean;
+    wr: TRect;
+    barX, barTop: Integer;
+    overShow, overKeep: Boolean;
 begin
-    if IsIconic(gMainWnd) then
+    if IsIconic(gMainWnd) or (not GetWindowRect(gMainWnd, wr)) then
     begin
         hideBar;
         Exit;
     end;
     if not GetCursorPos(pt) then
         Exit;
+    barX := wr.Left + ((wr.Right - wr.Left) - BAR_WIDTH) div 2;
+    barTop := wr.Top;
     if gShown then
     begin
-        overX := (pt.x >= gBarX - 10) and (pt.x <= gBarX + BAR_WIDTH + 10);
-        if (not overX) or (pt.y > BAR_HEIGHT + 6) then
-            hideBar;
+        overKeep := (pt.x >= barX - 10) and (pt.x <= barX + BAR_WIDTH + 10);
+        if (not overKeep) or (pt.y < barTop - 2) or (pt.y > barTop + BAR_HEIGHT + 6) then
+            hideBar
+        else
+            showBar(barX, barTop); // keep it tracked over the window top
     end
     else
     begin
-        overX := (pt.x >= gBarX - 30) and (pt.x <= gBarX + BAR_WIDTH + 30);
-        if overX and (pt.y <= 1) then
-            showBar;
+        overShow := (pt.x >= barX - 30) and (pt.x <= barX + BAR_WIDTH + 30);
+        if overShow and (pt.y >= barTop - 2) and (pt.y <= barTop + 4) then
+            showBar(barX, barTop);
     end;
 end;
 
@@ -174,7 +178,6 @@ begin
     gFull := aFullScreen;
     gScreenW := GetSystemMetrics(SM_CXSCREEN);
     gScreenH := GetSystemMetrics(SM_CYSCREEN);
-    gBarX := (gScreenW - BAR_WIDTH) div 2;
     inst := GetModuleHandleW(nil);
 
     FillChar(wc, SizeOf(wc), 0);
@@ -187,7 +190,7 @@ begin
     RegisterClassExW(@wc);
 
     gBarWnd := CreateWindowExW(WS_EX_TOPMOST or WS_EX_TOOLWINDOW or WS_EX_NOACTIVATE,
-        BAR_CLASS, '', WS_POPUP, gBarX, 0, BAR_WIDTH, BAR_HEIGHT, 0, 0, inst, nil);
+        BAR_CLASS, '', WS_POPUP, 0, 0, BAR_WIDTH, BAR_HEIGHT, 0, 0, inst, nil);
     if gBarWnd = 0 then
         Exit;
 
