@@ -1,6 +1,8 @@
 unit AppLaunch;
 
-{$mode objfpc}{$H+}
+{$IFDEF FPC}
+{$mode delphiunicode}
+{$ENDIF}
 
 interface
 

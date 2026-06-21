@@ -1,6 +1,8 @@
 unit AppConfig;
 
-{$mode objfpc}{$H+}
+{$IFDEF FPC}
+{$mode delphiunicode}
+{$ENDIF}
 
 interface
 

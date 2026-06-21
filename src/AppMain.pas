@@ -1,6 +1,8 @@
 program AppMain;
 
-{$mode objfpc}{$H+}
+{$IFDEF FPC}
+{$mode delphiunicode}
+{$ENDIF}
 
 uses
   Math, Windows, SysUtils, webview, AppConfig, AppLaunch;
@@ -10,12 +12,20 @@ var
   wnd: HWND;
   useFullScreen: Boolean;
   fullScreenForced: Boolean;
-  startUrl: AnsiString;
-  configPath: AnsiString;
-  defaultCfg: AnsiString;
+  startUrl: string;
+  configPath: string;
+  defaultCfg: string;
   cfg: TAppConfig;
-  cfgErr: AnsiString;
+  cfgErr: string;
   i: Integer;
+
+{ webview's C API expects UTF-8. Under UnicodeString (UTF-16) the bytes must be
+  transcoded before being handed over as PAnsiChar. The returned UTF8String lives
+  until the end of the calling statement, which covers the duration of the call. }
+function U8(const aValue: string): UTF8String;
+begin
+  Result := UTF8String(aValue);
+end;
 
 { Bound JS callback: terminates the run loop. WebView2's window.close() only
   raises WindowCloseRequested, which the webview library does not handle, so a
@@ -25,10 +35,9 @@ begin
   webview_terminate(PWebView(arg));
 end;
 
-procedure Fail(const aMsg: AnsiString);
+procedure Fail(const aMsg: string);
 begin
-  MessageBoxW(0, PWideChar(UnicodeString(aMsg)), 'AppCore Error',
-    MB_OK or MB_ICONERROR);
+  MessageBoxW(0, PWideChar(aMsg), 'AppCore Error', MB_OK or MB_ICONERROR);
   Halt(1);
 end;
 
@@ -39,7 +48,7 @@ end;
 procedure StartServices(const aCfg: TAppConfig);
 var
   exitCode: DWORD;
-  envPrefix: AnsiString;
+  envPrefix: string;
 begin
   if aCfg.Mode = amDev then
   begin
@@ -118,7 +127,7 @@ begin
     Fail('Failed to create WebView2 instance.'#13#10 +
       'Make sure Microsoft Edge WebView2 Runtime is installed.');
 
-  webview_set_title(w, PAnsiChar('AppCore'));
+  webview_set_title(w, PAnsiChar(U8('AppCore')));
 
   if useFullScreen then
   begin
@@ -131,13 +140,13 @@ begin
   else
     webview_set_size(w, 1024, 768, WebView_Hint_None);
 
-  webview_bind(w, PAnsiChar('__appcoreExit'), @handleExit, w);
-  webview_init(w, PAnsiChar(
+  webview_bind(w, PAnsiChar(U8('__appcoreExit')), @handleExit, w);
+  webview_init(w, PAnsiChar(U8(
     'document.addEventListener("keydown",function(e){' +
     'if(e.key==="Escape")window.__appcoreExit();' +
-    '});'));
+    '});')));
 
-  webview_navigate(w, PAnsiChar(startUrl));
+  webview_navigate(w, PAnsiChar(U8(startUrl)));
   webview_run(w);
   webview_destroy(w);
 end.
