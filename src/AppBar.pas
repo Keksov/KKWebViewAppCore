@@ -200,7 +200,12 @@ begin
     if gBarWnd = 0 then
         Exit;
 
-    font := GetStockObject(DEFAULT_GUI_FONT);
+    // Larger glyph font for readability (button size stays 44x30).
+    font := CreateFontW(-20, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, 5 {CLEARTYPE_QUALITY},
+        DEFAULT_PITCH or FF_DONTCARE, 'Segoe UI Symbol');
+    if font = 0 then
+        font := GetStockObject(DEFAULT_GUI_FONT);
     gBtnMin := addButton(UnicodeString(#$2013), ID_MIN, 0, inst, font);            // en dash
     gBtnMax := addButton(UnicodeString(#$25A1), ID_MAX, BTN_WIDTH, inst, font);    // square
     gBtnClose := addButton(UnicodeString(#$2715), ID_CLOSE, BTN_WIDTH * 2, inst, font); // cross
