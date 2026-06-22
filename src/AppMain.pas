@@ -36,6 +36,8 @@ var
     useFullScreen: Boolean;
     fullScreenForced: Boolean;
 
+function SetProcessDPIAware: BOOL; stdcall; external 'user32' name 'SetProcessDPIAware';
+
 {*******************************************************************************
 * toUtf8
 * webview's C API expects UTF-8. Under UnicodeString (UTF-16) the bytes must be
@@ -133,6 +135,11 @@ begin
 end;
 
 begin
+    // Become DPI-aware before any window is created so cursor, window and
+    // metric coordinates share one space (needed for the control bar to track
+    // the window) and the web content renders crisply on high-DPI displays.
+    SetProcessDPIAware;
+
     SetExceptionMask([exInvalidOp, exDenormalized, exZeroDivide,
                       exOverflow, exUnderflow, exPrecision]);
 

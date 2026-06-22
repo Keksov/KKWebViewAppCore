@@ -7,14 +7,14 @@ unit AppBar;
 interface
 
 uses
-    Windows;
+    Windows, Math;
 
-{ Creates an RDP-style floating control bar pinned to the top-center of the
-  screen with minimize / restore-fullscreen / close buttons. The bar is a
-  separate top-most tool window that auto-hides and slides into view when the
-  cursor reaches the top edge. Its buttons act on aMainWindow. Must be called on
-  the GUI thread before the webview message loop starts; that loop pumps the
-  bar's messages. aFullScreen tells the bar the window's initial state. }
+{ Creates an RDP-style floating control bar pinned to the top-center of the main
+  window with minimize / restore-fullscreen / close buttons. The bar stays
+  visible but faint and fades to fully opaque while the cursor is over it, so it
+  can always be located. Must be called on the GUI thread before the webview
+  message loop starts; that loop pumps the bar's messages. aFullScreen tells the
+  bar the window's initial state. }
 procedure createControlBar(aMainWindow: HWND; aFullScreen: Boolean);
 
 implementation
@@ -25,18 +25,24 @@ const
     BAR_HEIGHT = 30;
     BTN_WIDTH = 44;
     TIMER_ID = 1;
-    TIMER_MS = 120;
+    TIMER_MS = 30;
     ID_MIN = 1001;
     ID_MAX = 1002;
     ID_CLOSE = 1003;
+    ALPHA_IDLE = 60;    // faint but still findable when the cursor is away
+    ALPHA_ACTIVE = 255; // fully opaque while hovered
+    ALPHA_STEP = 22;    // per-tick fade speed
 
 var
-    gShown: Boolean = False;
     gFull: Boolean = True;
+    gAlpha: Integer = ALPHA_IDLE;
     gScreenW: Integer = 0;
     gScreenH: Integer = 0;
     gBarWnd: HWND = 0;
     gMainWnd: HWND = 0;
+    gBtnMin: HWND = 0;
+    gBtnMax: HWND = 0;
+    gBtnClose: HWND = 0;
 
 {*******************************************************************************
 * applyMainGeometry
@@ -62,64 +68,63 @@ begin
 end;
 
 {*******************************************************************************
-* showBar
-* Positions the bar at the top-center of the main window (tracking it even when
-* not full screen) and makes it visible.
+* setBarAlpha
 *******************************************************************************}
-procedure showBar(aX, aTop: Integer);
+procedure setBarAlpha(aAlpha: Integer);
 begin
-    SetWindowPos(gBarWnd, HWND_TOPMOST, aX, aTop, BAR_WIDTH, BAR_HEIGHT,
-        SWP_NOACTIVATE or SWP_SHOWWINDOW);
-    gShown := True;
+    if aAlpha < 0 then aAlpha := 0;
+    if aAlpha > 255 then aAlpha := 255;
+    gAlpha := aAlpha;
+    SetLayeredWindowAttributes(gBarWnd, 0, Byte(aAlpha), LWA_ALPHA);
 end;
 
 {*******************************************************************************
-* hideBar
+* cursorOverBar
+* DPI-safe hover test: compares the window under the cursor against the bar and
+* its buttons by handle, avoiding any cursor-vs-screen coordinate arithmetic.
 *******************************************************************************}
-procedure hideBar;
-begin
-    if gShown then
-    begin
-        ShowWindow(gBarWnd, SW_HIDE);
-        gShown := False;
-    end;
-end;
-
-{*******************************************************************************
-* updateAutoHide
-* Shows the bar while the cursor is near the top-center edge, hides it once the
-* cursor leaves the bar area or the main window is minimized.
-*******************************************************************************}
-procedure updateAutoHide;
+function cursorOverBar: Boolean;
 var
     pt: TPoint;
+    h: HWND;
+begin
+    Result := False;
+    if not GetCursorPos(pt) then
+        Exit;
+    h := WindowFromPoint(pt);
+    Result := (h = gBarWnd) or (h = gBtnMin) or (h = gBtnMax) or (h = gBtnClose);
+end;
+
+{*******************************************************************************
+* updateBar
+* Keeps the bar pinned to the top-center of the main window and fades it between
+* a faint idle level and fully opaque depending on whether the cursor is over
+* it. The bar never fully disappears (except while the window is minimized).
+*******************************************************************************}
+procedure updateBar;
+var
     wr: TRect;
+    target: Integer;
     barX, barTop: Integer;
-    overShow, overKeep: Boolean;
 begin
     if IsIconic(gMainWnd) or (not GetWindowRect(gMainWnd, wr)) then
     begin
-        hideBar;
+        if IsWindowVisible(gBarWnd) then
+            ShowWindow(gBarWnd, SW_HIDE);
         Exit;
     end;
-    if not GetCursorPos(pt) then
-        Exit;
+
     barX := wr.Left + ((wr.Right - wr.Left) - BAR_WIDTH) div 2;
     barTop := wr.Top;
-    if gShown then
-    begin
-        overKeep := (pt.x >= barX - 10) and (pt.x <= barX + BAR_WIDTH + 10);
-        if (not overKeep) or (pt.y < barTop - 2) or (pt.y > barTop + BAR_HEIGHT + 6) then
-            hideBar
-        else
-            showBar(barX, barTop); // keep it tracked over the window top
-    end
-    else
-    begin
-        overShow := (pt.x >= barX - 30) and (pt.x <= barX + BAR_WIDTH + 30);
-        if overShow and (pt.y >= barTop - 2) and (pt.y <= barTop + 4) then
-            showBar(barX, barTop);
-    end;
+    SetWindowPos(gBarWnd, HWND_TOPMOST, barX, barTop, BAR_WIDTH, BAR_HEIGHT,
+        SWP_NOACTIVATE or SWP_SHOWWINDOW);
+
+    if cursorOverBar then target := ALPHA_ACTIVE else target := ALPHA_IDLE;
+
+    if gAlpha < target then
+        setBarAlpha(Min(gAlpha + ALPHA_STEP, target))
+    else if gAlpha > target then
+        setBarAlpha(Max(gAlpha - ALPHA_STEP, target));
 end;
 
 {*******************************************************************************
@@ -130,7 +135,7 @@ begin
     case aMsg of
         WM_TIMER:
             begin
-                updateAutoHide;
+                updateBar;
                 Result := 0;
             end;
         WM_COMMAND:
@@ -189,16 +194,20 @@ begin
     wc.lpszClassName := BAR_CLASS;
     RegisterClassExW(@wc);
 
-    gBarWnd := CreateWindowExW(WS_EX_TOPMOST or WS_EX_TOOLWINDOW or WS_EX_NOACTIVATE,
+    gBarWnd := CreateWindowExW(
+        WS_EX_TOPMOST or WS_EX_TOOLWINDOW or WS_EX_NOACTIVATE or WS_EX_LAYERED,
         BAR_CLASS, '', WS_POPUP, 0, 0, BAR_WIDTH, BAR_HEIGHT, 0, 0, inst, nil);
     if gBarWnd = 0 then
         Exit;
 
     font := GetStockObject(DEFAULT_GUI_FONT);
-    addButton(UnicodeString(#$2013), ID_MIN, 0, inst, font);            // en dash
-    addButton(UnicodeString(#$25A1), ID_MAX, BTN_WIDTH, inst, font);    // square
-    addButton(UnicodeString(#$2715), ID_CLOSE, BTN_WIDTH * 2, inst, font); // cross
+    gBtnMin := addButton(UnicodeString(#$2013), ID_MIN, 0, inst, font);            // en dash
+    gBtnMax := addButton(UnicodeString(#$25A1), ID_MAX, BTN_WIDTH, inst, font);    // square
+    gBtnClose := addButton(UnicodeString(#$2715), ID_CLOSE, BTN_WIDTH * 2, inst, font); // cross
 
+    // Start faint and visible so the bar can always be found.
+    setBarAlpha(ALPHA_IDLE);
+    ShowWindow(gBarWnd, SW_SHOWNOACTIVATE);
     SetTimer(gBarWnd, TIMER_ID, TIMER_MS, nil);
 end;
 

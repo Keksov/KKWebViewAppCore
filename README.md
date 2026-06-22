@@ -157,9 +157,10 @@ example is in [`examples/appcore.cfg`](examples/appcore.cfg).
 ### Window controls (fullscreen)
 
 In fullscreen the window is borderless, so there are no system buttons. An
-RDP-style floating bar (minimize / restore-fullscreen / close) is pinned to the
-top-center of the screen and auto-hides — move the cursor to the top edge to
-reveal it. Closing the servers and consoles still happens on exit.
+RDP-style floating bar (minimize / restore-fullscreen / close) sits at the
+top-center of the window. It stays faintly visible so it can always be found
+and fades to fully opaque while the cursor is over it. Closing the servers and
+consoles still happens on exit.
 
 ### Exit
 
