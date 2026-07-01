@@ -1,0 +1,166 @@
+{
+  "schemaVersion": 1,
+  "plan": "pixie-splash",
+  "planDoc": "docs/pixie-splash/pixie-splash-plan.md",
+  "title": "Native Pixie/Direct2D loading splash before WebView2 startup",
+  "status": "in-progress",
+  "createdAt": "2026-07-01",
+  "updatedAt": "2026-07-01",
+  "decisions": [
+    { "id": "PS-D1", "text": "Use Pixie's framework-agnostic D2D core only: Pixie.Canvas, Pixie.Canvas.D2D, Pixie.DrawingCanvas, Pixie.D2DHeaders, Pixie.Types, Pixie.WebColor, Pixie.Borders, Pixie.GradientLayer, Pixie.FontDescription (+ transitive units found in the spike). Exclude all *.VCL.*, *.FMX.*, *.Cairo.*, *ControlBase*, and HTML/SVG/Markdown units unless needed." },
+    { "id": "PS-D2", "text": "Splash is a native Win32 frameless top-level window drawn with Pixie D2D (ID2D1DCRenderTarget.BindDC on the window DC), created and shown BEFORE webview_create so it appears instantly, decoupled from WebView2 init." },
+    { "id": "PS-D3", "text": "Vendoring follows the repo convention (uos in SoundCore): Pixie lives in a git-ignored shared vendors\\pixie fetched by a provision script in the AppCore repo; NO third-party sources/binaries committed. Only source search paths are added to build/win_x64/fpc-x64.cfg." },
+    { "id": "PS-D4", "text": "Localization reuses the SplashLang cfg key (ru default / en); status labels mirror the current splash phases." },
+    { "id": "PS-D5", "text": "Process: plan + ledger; per-step atomic commits (step-id prefixed); NO push; approval gate (PS0.3) before vendoring/implementation; visual launch is a manual gate." },
+    { "id": "PS-D6", "text": "OPEN (PS0.3): (a) provisioning method — shared ..\\vendors\\pixie + script (default) vs git subtree; (b) retire the in-WebView HTML splash vs keep it as a fallback; (c) splash visuals — spinner + step checklist (mirrors today) vs minimal logo+status." }
+  ],
+  "steps": [
+    {
+      "id": "PS0.1",
+      "phase": 0,
+      "title": "Plan & ledger",
+      "status": "done",
+      "dependsOn": [],
+      "artifacts": ["docs/pixie-splash/pixie-splash-plan.md", "docs/pixie-splash/pixie-splash-progress.json"],
+      "verify": "ledger JSON parses; dependsOn DAG acyclic; plan + ledger written",
+      "startedAt": "2026-07-01", "finishedAt": "2026-07-01", "blockedReason": null,
+      "evidence": [
+        "Pixie identified as the FPC/Delphi HTML/graphics engine at EchoScript/EchoRecorder/vendors/pixie (NOT the Nim library).",
+        "Static feasibility: Pixie.Canvas.D2D.pas uses only Windows, ActiveX, SysUtils, Classes, Math, Generics.Collections + Pixie.* (no LCL/VCL/FMX/Graphics). Base Pixie.Canvas.pas uses only Classes, Generics.Collections. TPixieD2DCanvas renders to an HDC via ID2D1DCRenderTarget.BindDC (and offscreen via CreateWicBitmapRenderTarget). => usable from plain FPC + WinAPI, no Lazarus.",
+        "DAG: PS0.1 -> PS0.2 (spike) -> PS0.3 (approval) -> PS1.1 -> PS1.2 -> {PS2.1 -> PS2.2 -> PS2.3 -> PS2.4} -> PS3.1 -> PS3.2 -> PS4.1 -> PS4.2."
+      ]
+    },
+    {
+      "id": "PS0.2",
+      "phase": 0,
+      "title": "Feasibility spike: compile minimal Pixie D2D under plain FPC + render to a frameless window",
+      "status": "todo",
+      "dependsOn": ["PS0.1"],
+      "artifacts": ["(temp) spike program", "docs/pixie-splash/pixie-splash-progress.json"],
+      "verify": "the minimal Pixie D2D unit set compiles with AppCore's fpc-x64.cfg (no LCL on the search path); a frameless test window shows Pixie-drawn text via BindDC; the window appears effectively instantly (<< WebView2 init).",
+      "startedAt": null, "finishedAt": null, "blockedReason": null,
+      "evidence": []
+    },
+    {
+      "id": "PS0.3",
+      "phase": 0,
+      "title": "Approval gate (PS-D6)",
+      "status": "todo",
+      "dependsOn": ["PS0.2"],
+      "artifacts": ["docs/pixie-splash/pixie-splash-plan.md"],
+      "verify": "owner confirms PS-D6 (a) provisioning method, (b) retire-vs-keep HTML splash, (c) splash visuals. PAUSE before PS1.1.",
+      "startedAt": null, "finishedAt": null, "blockedReason": null,
+      "evidence": []
+    },
+    {
+      "id": "PS1.1",
+      "phase": 1,
+      "title": "Provision Pixie into git-ignored vendors + add source paths to fpc-x64.cfg",
+      "status": "todo",
+      "dependsOn": ["PS0.3"],
+      "artifacts": ["scripts/provision-pixie (repo)", "build/win_x64/fpc-x64.cfg", ".gitignore"],
+      "verify": "vendors\\pixie present and git-ignored; provision script committed; fpc-x64.cfg has the minimal Pixie source paths; unit set documented in the plan.",
+      "startedAt": null, "finishedAt": null, "blockedReason": null,
+      "evidence": []
+    },
+    {
+      "id": "PS1.2",
+      "phase": 1,
+      "title": "AppMain still builds with Pixie on the search path",
+      "status": "todo",
+      "dependsOn": ["PS1.1"],
+      "artifacts": ["build/win_x64/bin/AppMain.exe"],
+      "verify": "build_app.bat succeeds with the Pixie paths added; no regression in the current app.",
+      "startedAt": null, "finishedAt": null, "blockedReason": null,
+      "evidence": []
+    },
+    {
+      "id": "PS2.1",
+      "phase": 2,
+      "title": "AppSplash.pas — frameless top-level splash window",
+      "status": "todo",
+      "dependsOn": ["PS1.2"],
+      "artifacts": ["src/AppSplash.pas"],
+      "verify": "a borderless rectangular window is created, shown centered, and destroyed cleanly; no taskbar button; created in << WebView2 init time.",
+      "startedAt": null, "finishedAt": null, "blockedReason": null,
+      "evidence": []
+    },
+    {
+      "id": "PS2.2",
+      "phase": 2,
+      "title": "Pixie D2D rendering + splashSetPhase API (localized)",
+      "status": "todo",
+      "dependsOn": ["PS2.1"],
+      "artifacts": ["src/AppSplash.pas"],
+      "verify": "background, app title, and a step line/checklist are drawn with Pixie via BindDC; splashSetPhase(text) updates the drawn status; ru/en per SplashLang.",
+      "startedAt": null, "finishedAt": null, "blockedReason": null,
+      "evidence": []
+    },
+    {
+      "id": "PS2.3",
+      "phase": 2,
+      "title": "Animation + thread-safe status updates",
+      "status": "todo",
+      "dependsOn": ["PS2.2"],
+      "artifacts": ["src/AppSplash.pas"],
+      "verify": "WM_TIMER-driven spinner animates; status set from the startup worker thread is rendered without races or flicker.",
+      "startedAt": null, "finishedAt": null, "blockedReason": null,
+      "evidence": []
+    },
+    {
+      "id": "PS2.4",
+      "phase": 2,
+      "title": "Per-monitor DPI for the splash",
+      "status": "todo",
+      "dependsOn": ["PS2.3"],
+      "artifacts": ["src/AppSplash.pas"],
+      "verify": "splash size/text scale by the target monitor DPI (PMv2); centered correctly on high-DPI / multi-monitor.",
+      "startedAt": null, "finishedAt": null, "blockedReason": null,
+      "evidence": []
+    },
+    {
+      "id": "PS3.1",
+      "phase": 3,
+      "title": "Reorder startup: native splash first, WebView2 in background, swap on ready",
+      "status": "todo",
+      "dependsOn": ["PS2.4"],
+      "artifacts": ["src/AppMain.pas"],
+      "verify": "splash shows before webview_create; startServices + WebView2 run in the worker; status pushed to the splash; on port-ready the WebView2 window is shown and the splash destroyed; no blank-window gap.",
+      "startedAt": null, "finishedAt": null, "blockedReason": null,
+      "evidence": []
+    },
+    {
+      "id": "PS3.2",
+      "phase": 3,
+      "title": "Retire (or flag) the in-WebView HTML splash",
+      "status": "todo",
+      "dependsOn": ["PS3.1"],
+      "artifacts": ["src/AppMain.pas"],
+      "verify": "the HTML splash is removed or gated; only the native splash is shown pre-ready.",
+      "startedAt": null, "finishedAt": null, "blockedReason": null,
+      "evidence": []
+    },
+    {
+      "id": "PS4.1",
+      "phase": 4,
+      "title": "Build, deploy, visual gate",
+      "status": "todo",
+      "dependsOn": ["PS3.2"],
+      "artifacts": ["build/win_x64/bin/AppMain.exe", "SoundTrainer/server", "MindWaveCore/server"],
+      "verify": "AppMain builds; deployed to SoundTrainer + MindWaveCore; owner confirms visually: instant splash, advancing status, clean swap to the UI.",
+      "startedAt": null, "finishedAt": null, "blockedReason": null,
+      "evidence": []
+    },
+    {
+      "id": "PS4.2",
+      "phase": 4,
+      "title": "STATUS/docs update + final commit",
+      "status": "todo",
+      "dependsOn": ["PS4.1"],
+      "artifacts": ["docs/pixie-splash/pixie-splash-progress.json", "AGENTS.md"],
+      "verify": "ledger marked complete; docs reflect the native splash; final commit made.",
+      "startedAt": null, "finishedAt": null, "blockedReason": null,
+      "evidence": []
+    }
+  ]
+}
