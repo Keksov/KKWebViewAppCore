@@ -96,10 +96,29 @@ begin
 end;
 
 {*******************************************************************************
+* mainWindowIsActive
+* True when our application is the foreground app. The bar is WS_EX_NOACTIVATE so
+* it never steals the foreground; interacting with the bar leaves the main window
+* as the foreground window. When another application's window is brought to the
+* front, the foreground window's root owner is no longer the main window, so the
+* (top-most) bar must be hidden to avoid floating over other apps.
+*******************************************************************************}
+function mainWindowIsActive: Boolean;
+var
+    fg: HWND;
+begin
+    fg := GetForegroundWindow;
+    Result := (fg <> 0) and
+        ((fg = gMainWnd) or (fg = gBarWnd) or
+         (GetAncestor(fg, GA_ROOTOWNER) = gMainWnd));
+end;
+
+{*******************************************************************************
 * updateBar
 * Keeps the bar pinned to the top-center of the main window and fades it between
 * a faint idle level and fully opaque depending on whether the cursor is over
-* it. The bar never fully disappears (except while the window is minimized).
+* it. The bar is hidden while the window is minimized or while another
+* application is in the foreground, so it never floats over other apps.
 *******************************************************************************}
 procedure updateBar;
 var
@@ -107,7 +126,7 @@ var
     target: Integer;
     barX, barTop: Integer;
 begin
-    if IsIconic(gMainWnd) or (not GetWindowRect(gMainWnd, wr)) then
+    if IsIconic(gMainWnd) or (not mainWindowIsActive) or (not GetWindowRect(gMainWnd, wr)) then
     begin
         if IsWindowVisible(gBarWnd) then
             ShowWindow(gBarWnd, SW_HIDE);
