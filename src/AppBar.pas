@@ -19,6 +19,9 @@ procedure createControlBar(aMainWindow: HWND; aFullScreen: Boolean);
 
 implementation
 
+uses
+    AppWindowState;
+
 const
     BAR_CLASS: PWideChar = 'AppCoreControlBar';
     BAR_WIDTH = 132;
@@ -35,6 +38,7 @@ const
 
 var
     gFull: Boolean = True;
+    gRestorePending: Boolean = False;  // apply saved "restored" state on first timer tick
     gAlpha: Integer = ALPHA_IDLE;
     gScreenW: Integer = 0;
     gScreenH: Integer = 0;
@@ -154,6 +158,13 @@ begin
     case aMsg of
         WM_TIMER:
             begin
+                // Applying geometry before the message loop runs gets overridden by
+                // the webview, so the saved "restored" state is applied here (once).
+                if gRestorePending then
+                begin
+                    gRestorePending := False;
+                    applyMainGeometry(gFull);
+                end;
                 updateBar;
                 Result := 0;
             end;
@@ -161,7 +172,11 @@ begin
             begin
                 case LOWORD(aWParam) of
                     ID_MIN: ShowWindow(gMainWnd, SW_MINIMIZE);
-                    ID_MAX: applyMainGeometry(not gFull);
+                    ID_MAX:
+                        begin
+                            applyMainGeometry(not gFull);
+                            saveKioskFull(gFull);   // remember fullscreen/restored
+                        end;
                     ID_CLOSE: PostMessageW(gMainWnd, WM_CLOSE, 0, 0);
                 end;
                 Result := 0;
@@ -197,6 +212,7 @@ var
     wc: WNDCLASSEXW;
     inst: HINST;
     font: HGDIOBJ;
+    savedFull: Boolean;
 begin
     gMainWnd := aMainWindow;
     gFull := aFullScreen;
@@ -233,6 +249,13 @@ begin
     setBarAlpha(ALPHA_IDLE);
     ShowWindow(gBarWnd, SW_SHOWNOACTIVATE);
     SetTimer(gBarWnd, TIMER_ID, TIMER_MS, nil);
+
+    // Apply the saved (or default) fullscreen/restored state on the first timer
+    // tick, once the message loop is running (geometry set before webview_run gets
+    // overridden by the webview).
+    if loadKioskFull(savedFull) then
+        gFull := savedFull;
+    gRestorePending := True;
 end;
 
 end.
