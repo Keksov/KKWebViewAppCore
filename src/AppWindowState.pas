@@ -203,8 +203,20 @@ begin
 end;
 
 {*******************************************************************************
+* writeState — persists gLastState next to the exe (or temp fallback).
+*******************************************************************************}
+procedure writeState();
+begin
+    if gLastState = '' then
+        Exit;
+    if not tryWriteText(nearExePath, gLastState) then
+        tryWriteText(tempPath, gLastState);
+end;
+
+{*******************************************************************************
 * stateWndProc — subclass proc: records the geometry on every move/size (while
-* not minimized), then chains to the original proc.
+* not minimized) and persists it immediately when a move/resize settles or the
+* window is maximized/restored, then chains to the original proc.
 *******************************************************************************}
 function stateWndProc(aWnd: HWND; aMsg: UINT; aWParam: WPARAM; aLParam: LPARAM): LRESULT; stdcall;
 var
@@ -215,7 +227,12 @@ begin
         s := placementString(aWnd);
         if s <> '' then
             gLastState := s;
-    end;
+        // Persist right away on a maximize/restore (these do not send WM_EXITSIZEMOVE).
+        if (aMsg = WM_SIZE) and ((aWParam = SIZE_MAXIMIZED) or (aWParam = SIZE_RESTORED)) then
+            writeState;
+    end
+    else if aMsg = WM_EXITSIZEMOVE then
+        writeState;   // end of a move/resize drag
     Result := CallWindowProcW(TFNWndProc(Pointer(gOrigProc)), aWnd, aMsg, aWParam, aLParam);
 end;
 
@@ -236,10 +253,7 @@ end;
 *******************************************************************************}
 procedure flushWindowState();
 begin
-    if gLastState = '' then
-        Exit;
-    if not tryWriteText(nearExePath, gLastState) then
-        tryWriteText(tempPath, gLastState);
+    writeState;
 end;
 
 end.
