@@ -38,7 +38,8 @@ const
 
 var
     gFull: Boolean = True;
-    gRestorePending: Boolean = False;  // apply saved "restored" state on first timer tick
+    gAssertTicks: Integer = 0;         // re-assert startup geometry for this many ticks
+    gMainOrigProc: LONG_PTR = 0;       // subclassed main window's original WndProc
     gAlpha: Integer = ALPHA_IDLE;
     gScreenW: Integer = 0;
     gScreenH: Integer = 0;
@@ -50,25 +51,34 @@ var
 
 {*******************************************************************************
 * applyMainGeometry
-* Switches the (borderless) main window between full screen and a centered
-* restored size.
+* Switches the borderless main window between full screen and a restored size.
+* Restored windows get a sizing border (WS_THICKFRAME) so they can be resized by
+* their edges/corners, and reuse the last restored geometry when one was saved.
 *******************************************************************************}
 procedure applyMainGeometry(aFull: Boolean);
 var
     rw, rh: Integer;
+    l, t, r, b: Integer;
 begin
-    SetWindowLongW(gMainWnd, GWL_STYLE, Integer(WS_POPUP or WS_VISIBLE));
     if aFull then
-        SetWindowPos(gMainWnd, HWND_TOP, 0, 0, gScreenW, gScreenH, SWP_FRAMECHANGED)
+    begin
+        SetWindowLongW(gMainWnd, GWL_STYLE, Integer(WS_POPUP or WS_VISIBLE));
+        SetWindowPos(gMainWnd, HWND_TOP, 0, 0, gScreenW, gScreenH, SWP_FRAMECHANGED);
+    end
     else
     begin
-        rw := (gScreenW * 7) div 10;
-        rh := (gScreenH * 7) div 10;
-        SetWindowPos(gMainWnd, HWND_TOP, (gScreenW - rw) div 2, (gScreenH - rh) div 2,
-            rw, rh, SWP_FRAMECHANGED);
+        SetWindowLongW(gMainWnd, GWL_STYLE, Integer(WS_POPUP or WS_THICKFRAME or WS_VISIBLE));
+        if loadKioskRect(l, t, r, b) then
+            SetWindowPos(gMainWnd, HWND_TOP, l, t, r - l, b - t, SWP_FRAMECHANGED)
+        else
+        begin
+            rw := (gScreenW * 7) div 10;
+            rh := (gScreenH * 7) div 10;
+            SetWindowPos(gMainWnd, HWND_TOP, (gScreenW - rw) div 2, (gScreenH - rh) div 2,
+                rw, rh, SWP_FRAMECHANGED);
+        end;
     end;
     gFull := aFull;
-    SetForegroundWindow(gMainWnd);
 end;
 
 {*******************************************************************************
@@ -158,12 +168,12 @@ begin
     case aMsg of
         WM_TIMER:
             begin
-                // Applying geometry before the message loop runs gets overridden by
-                // the webview, so the saved "restored" state is applied here (once).
-                if gRestorePending then
+                // Geometry set before the loop runs is overridden by the webview as
+                // it initializes, so re-assert the saved state for the first ~1s.
+                if gAssertTicks > 0 then
                 begin
-                    gRestorePending := False;
                     applyMainGeometry(gFull);
+                    Dec(gAssertTicks);
                 end;
                 updateBar;
                 Result := 0;
@@ -176,6 +186,7 @@ begin
                         begin
                             applyMainGeometry(not gFull);
                             saveKioskFull(gFull);   // remember fullscreen/restored
+                            SetForegroundWindow(gMainWnd);
                         end;
                     ID_CLOSE: PostMessageW(gMainWnd, WM_CLOSE, 0, 0);
                 end;
@@ -205,6 +216,18 @@ begin
 end;
 
 {*******************************************************************************
+* mainWndProc
+* Subclass of the main window: when a resize of the restored (non-fullscreen)
+* window settles, remember its new geometry, then chain to the original proc.
+*******************************************************************************}
+function mainWndProc(aWnd: HWND; aMsg: UINT; aWParam: WPARAM; aLParam: LPARAM): LRESULT; stdcall;
+begin
+    if (aMsg = WM_EXITSIZEMOVE) and (not gFull) then
+        saveKioskRect(gMainWnd);
+    Result := CallWindowProcW(TFNWndProc(Pointer(gMainOrigProc)), aWnd, aMsg, aWParam, aLParam);
+end;
+
+{*******************************************************************************
 * createControlBar
 *******************************************************************************}
 procedure createControlBar(aMainWindow: HWND; aFullScreen: Boolean);
@@ -216,6 +239,8 @@ var
 begin
     gMainWnd := aMainWindow;
     gFull := aFullScreen;
+    // Track resizes of the (restored) main window to remember its geometry.
+    gMainOrigProc := SetWindowLongPtrW(gMainWnd, GWL_WNDPROC, LONG_PTR(PtrInt(@mainWndProc)));
     gScreenW := GetSystemMetrics(SM_CXSCREEN);
     gScreenH := GetSystemMetrics(SM_CYSCREEN);
     inst := GetModuleHandleW(nil);
@@ -250,12 +275,12 @@ begin
     ShowWindow(gBarWnd, SW_SHOWNOACTIVATE);
     SetTimer(gBarWnd, TIMER_ID, TIMER_MS, nil);
 
-    // Apply the saved (or default) fullscreen/restored state on the first timer
-    // tick, once the message loop is running (geometry set before webview_run gets
-    // overridden by the webview).
+    // Apply the saved (or default) fullscreen/restored state once the message loop
+    // is running, re-asserting for ~1s (34 * 30ms) to win over the webview's own
+    // startup resize of the host window.
     if loadKioskFull(savedFull) then
         gFull := savedFull;
-    gRestorePending := True;
+    gAssertTicks := 34;
 end;
 
 end.

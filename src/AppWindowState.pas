@@ -24,6 +24,8 @@ procedure attachWindowState(aWnd: HWND);
 procedure flushWindowState();
 procedure saveKioskFull(aFull: Boolean);
 function loadKioskFull(out aFull: Boolean): Boolean;
+procedure saveKioskRect(aWnd: HWND);
+function loadKioskRect(out aLeft, aTop, aRight, aBottom: Integer): Boolean;
 
 implementation
 
@@ -172,6 +174,44 @@ begin
 end;
 
 {*******************************************************************************
+* setStateValue — updates "aKey=aValue" in the state file, preserving other keys.
+*******************************************************************************}
+procedure setStateValue(const aKey, aValue: string);
+var
+    data: string;
+    rest: string;
+    line: string;
+    prefix: string;
+    outData: string;
+    nl: Integer;
+begin
+    prefix := aKey + '=';
+    outData := '';
+    if readStateFile(data) then
+    begin
+        rest := data;
+        while rest <> '' do
+        begin
+            nl := Pos(#10, rest);
+            if nl > 0 then
+            begin
+                line := Trim(Copy(rest, 1, nl - 1));
+                rest := Copy(rest, nl + 1, Length(rest));
+            end
+            else
+            begin
+                line := Trim(rest);
+                rest := '';
+            end;
+            if (line <> '') and (Copy(line, 1, Length(prefix)) <> prefix) then
+                outData := outData + line + #13#10;
+        end;
+    end;
+    outData := outData + prefix + aValue + #13#10;
+    writeStateFile(outData);
+end;
+
+{*******************************************************************************
 * placementString — "left top right bottom showCmd" for aWnd, or '' on failure.
 *******************************************************************************}
 function placementString(aWnd: HWND): string;
@@ -262,7 +302,7 @@ end;
 procedure writeGeom();
 begin
     if gLastGeom <> '' then
-        writeStateFile('win=' + gLastGeom + #13#10);
+        setStateValue('win', gLastGeom);
 end;
 
 {*******************************************************************************
@@ -313,9 +353,9 @@ end;
 procedure saveKioskFull(aFull: Boolean);
 begin
     if aFull then
-        writeStateFile('kioskfull=1'#13#10)
+        setStateValue('kioskfull', '1')
     else
-        writeStateFile('kioskfull=0'#13#10);
+        setStateValue('kioskfull', '0');
 end;
 
 function loadKioskFull(out aFull: Boolean): Boolean;
@@ -325,6 +365,33 @@ begin
     Result := readValue('kioskfull', v);
     if Result then
         aFull := (Trim(v) = '1');
+end;
+
+{*******************************************************************************
+* saveKioskRect / loadKioskRect — the restored (non-fullscreen) kiosk geometry.
+*******************************************************************************}
+procedure saveKioskRect(aWnd: HWND);
+var
+    r: TRect;
+begin
+    if (aWnd <> 0) and GetWindowRect(aWnd, r) then
+        setStateValue('kioskrect', Format('%d %d %d %d', [r.Left, r.Top, r.Right, r.Bottom]));
+end;
+
+function loadKioskRect(out aLeft, aTop, aRight, aBottom: Integer): Boolean;
+var
+    rest: string;
+begin
+    Result := False;
+    if not readValue('kioskrect', rest) then
+        Exit;
+    rest := Trim(rest);
+    if not (nextInt(rest, aLeft) and nextInt(rest, aTop)
+            and nextInt(rest, aRight) and nextInt(rest, aBottom)) then
+        Exit;
+    if (aRight - aLeft <= 0) or (aBottom - aTop <= 0) then
+        Exit;
+    Result := True;
 end;
 
 end.
