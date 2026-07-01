@@ -2,6 +2,7 @@ program AppMain;
 
 {$IFDEF FPC}
 {$mode delphiunicode}
+{$codepage utf8}
 {$ENDIF}
 
 uses
@@ -30,11 +31,13 @@ const
         '.steps div.active::before{content:"\2026"}' +
         '.steps div.done::before{content:"\2713"}' +
         '</style>' +
-        '<script>window.__ph=[];window.acPhase=function(t){window.__ph.push(t);' +
-        'if(window.__render)window.__render()}</script>' +
+        '<script>window.__ph=[];window.__title=null;' +
+        'window.acPhase=function(t){window.__ph.push(t);if(window.__render)window.__render()};' +
+        'window.acTitle=function(t){window.__title=t;if(window.__render)window.__render()}</script>' +
         '<body><div class="box"><div class="sp"></div>' +
-        '<div class="t">Starting</div><div class="steps" id="steps"></div></div>' +
+        '<div class="t">...</div><div class="steps" id="steps"></div></div>' +
         '<script>window.__c=null;window.__render=function(){' +
+        'if(window.__title!==null){var h=document.querySelector(".t");if(h)h.textContent=window.__title}' +
         'var c=document.getElementById("steps");if(!c)return;' +
         'while(window.__ph.length){var t=window.__ph.shift();' +
         'if(window.__c)window.__c.className="done";' +
@@ -135,6 +138,27 @@ begin
 end;
 
 {*******************************************************************************
+* splashTitle
+* Sets the splash heading (aText plain, no double quotes).
+*******************************************************************************}
+procedure splashTitle(const aText: string);
+begin
+    pushEval(UTF8String('window.acTitle&&acTitle("' + aText + '")'));
+end;
+
+{*******************************************************************************
+* tr
+* Picks the Russian (default) or English splash string per gConfig.SplashLang.
+*******************************************************************************}
+function tr(const aRu, aEn: string): string;
+begin
+    if gConfig.SplashLang = 'en' then
+        Result := aEn
+    else
+        Result := aRu;
+end;
+
+{*******************************************************************************
 * resolveFreePorts
 * Relocates the app to free TCP ports so several AppCore apps can run side by side.
 * The backend always moves to the first bindable port at/after ServerPort. In dev
@@ -172,12 +196,13 @@ var
     exitCode: DWORD;
     envPrefix: string;
 begin
+    splashTitle(tr('Запуск…', 'Starting'));
     if aCfg.Mode = amDev then
     begin
         envPrefix := Format('set PORT=%d&& ', [aCfg.ServerPort]);
         if aCfg.ServerDir <> '' then
         begin
-            splashPhase('Starting backend');
+            splashPhase(tr('Запуск сервера', 'Starting backend'));
             launchInConsole(aCfg.ServerDir,
                 '"' + aCfg.BunExe + '" run dev', 'KK Server (dev)', envPrefix, True);
         end;
@@ -185,7 +210,7 @@ begin
         // --port moves the quasar dev server itself to the chosen free UI port.
         if aCfg.UiDir <> '' then
         begin
-            splashPhase('Starting interface (dev)');
+            splashPhase(tr('Запуск интерфейса', 'Starting interface'));
             launchInConsole(aCfg.UiDir,
                 Format('"%s" run dev -- --port %d', [aCfg.BunExe, aCfg.ReadyPort]),
                 'KK UI (quasar dev)', envPrefix, True);
@@ -195,7 +220,7 @@ begin
     begin
         if aCfg.BuildUi and (aCfg.UiDir <> '') then
         begin
-            splashPhase('Building interface');
+            splashPhase(tr('Сборка интерфейса', 'Building interface'));
             if not runAndWait(aCfg.UiDir, '"' + aCfg.BunExe + '" run build',
                 'KK UI build', exitCode) then
                 fail('Failed to start UI build (bun run build).');
@@ -205,16 +230,16 @@ begin
 
         if aCfg.ServerDir <> '' then
         begin
-            splashPhase('Starting server');
+            splashPhase(tr('Запуск сервера', 'Starting server'));
             envPrefix := Format('set PORT=%d&& ', [aCfg.ServerPort]);
             launchInConsole(aCfg.ServerDir,
                 '"' + aCfg.BunExe + '" run start', 'KK Server', envPrefix, False);
         end;
     end;
 
-    splashPhase('Waiting for services');
+    splashPhase(tr('Ожидание готовности', 'Waiting for services'));
     waitForPort(aCfg.ReadyPort, aCfg.ReadyTimeoutSec);
-    splashPhase('Ready');
+    splashPhase(tr('Готово', 'Ready'));
 end;
 
 {*******************************************************************************

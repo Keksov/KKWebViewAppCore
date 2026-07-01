@@ -24,6 +24,7 @@ type
         ReadyTimeoutSec: Integer;// max seconds to wait for the port
         ExeAutoUpdate: Boolean;      // self-update the exe/dll at startup
         ExeAutoUpdatePath: string;   // dir holding the newer AppMain.exe / libwebview.dll
+        SplashLang: string;          // startup splash language: 'ru' (default) or 'en'
         // Resolved at load time:
         ReadyPort: Integer;      // port to poll before opening the window
         StartUrl: string;        // URL the WebView2 window opens
@@ -170,6 +171,7 @@ begin
     aCfg.ReadyTimeoutSec := 30;
     aCfg.ExeAutoUpdate := False;
     aCfg.ExeAutoUpdatePath := '';
+    aCfg.SplashLang := 'ru';
 
     lines := TStringList.Create;
     try
@@ -207,7 +209,8 @@ begin
             else if key = 'fullscreen' then aCfg.FullScreen := parseBool(value, False)
             else if key = 'readytimeoutsec' then aCfg.ReadyTimeoutSec := StrToIntDef(value, 30)
             else if key = 'exeautoupdate' then aCfg.ExeAutoUpdate := parseBool(value, False)
-            else if key = 'exeautoupdatepath' then aCfg.ExeAutoUpdatePath := resolvePath(baseDir, unquote(value));
+            else if key = 'exeautoupdatepath' then aCfg.ExeAutoUpdatePath := resolvePath(baseDir, unquote(value))
+            else if key = 'splashlang' then aCfg.SplashLang := LowerCase(value);
         end;
     finally
         FreeAndNil(lines);
