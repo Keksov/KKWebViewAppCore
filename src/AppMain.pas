@@ -5,7 +5,7 @@ program AppMain;
 {$ENDIF}
 
 uses
-    Math, Windows, SysUtils, webview, AppConfig, AppLaunch, AppBar;
+    Math, Windows, SysUtils, webview, AppConfig, AppLaunch, AppUpdate, AppBar;
 
 const
     // Shown immediately while services start, so the window never looks frozen.
@@ -205,6 +205,10 @@ begin
     begin
         if not loadAppConfig(configPath, cfg, cfgErr) then
             fail(cfgErr);
+        // Self-update from ExeAutoUpdatePath: if a newer binary is staged, swap it
+        // in and relaunch before doing anything else.
+        if cfg.ExeAutoUpdate and applyExeAutoUpdate(cfg.ExeAutoUpdatePath) then
+            Halt(0);
         // Relocate to free ports so several AppCore apps can run at once.
         resolveFreePorts(cfg);
         startUrl := cfg.StartUrl;

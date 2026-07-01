@@ -22,6 +22,8 @@ type
         BuildUi: Boolean;        // prod: run `bun run build` before starting
         FullScreen: Boolean;     // open the window borderless fullscreen
         ReadyTimeoutSec: Integer;// max seconds to wait for the port
+        ExeAutoUpdate: Boolean;      // self-update the exe/dll at startup
+        ExeAutoUpdatePath: string;   // dir holding the newer AppMain.exe / libwebview.dll
         // Resolved at load time:
         ReadyPort: Integer;      // port to poll before opening the window
         StartUrl: string;        // URL the WebView2 window opens
@@ -54,6 +56,20 @@ begin
         Result := aPath
     else
         Result := ExpandFileName(IncludeTrailingPathDelimiter(aBaseDir) + aPath);
+end;
+
+{*******************************************************************************
+* unquote
+* Strips one layer of surrounding double or single quotes (config values may be
+* written as ExeAutoUpdatePath="c:\path with spaces").
+*******************************************************************************}
+function unquote(const aValue: string): string;
+begin
+    Result := aValue;
+    if (Length(Result) >= 2)
+       and ((Result[1] = '"') or (Result[1] = ''''))
+       and (Result[Length(Result)] = Result[1]) then
+        Result := Copy(Result, 2, Length(Result) - 2);
 end;
 
 {*******************************************************************************
@@ -152,6 +168,8 @@ begin
     aCfg.BuildUi := True;
     aCfg.FullScreen := False;
     aCfg.ReadyTimeoutSec := 30;
+    aCfg.ExeAutoUpdate := False;
+    aCfg.ExeAutoUpdatePath := '';
 
     lines := TStringList.Create;
     try
@@ -187,7 +205,9 @@ begin
             else if key = 'devurl' then aCfg.DevUrl := value
             else if key = 'buildui' then aCfg.BuildUi := parseBool(value, True)
             else if key = 'fullscreen' then aCfg.FullScreen := parseBool(value, False)
-            else if key = 'readytimeoutsec' then aCfg.ReadyTimeoutSec := StrToIntDef(value, 30);
+            else if key = 'readytimeoutsec' then aCfg.ReadyTimeoutSec := StrToIntDef(value, 30)
+            else if key = 'exeautoupdate' then aCfg.ExeAutoUpdate := parseBool(value, False)
+            else if key = 'exeautoupdatepath' then aCfg.ExeAutoUpdatePath := resolvePath(baseDir, unquote(value));
         end;
     finally
         FreeAndNil(lines);
