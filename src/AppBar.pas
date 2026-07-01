@@ -51,6 +51,10 @@ var
     gBtnMax: HWND = 0;
     gBtnClose: HWND = 0;
     gMoveOrigProc: LONG_PTR = 0;       // subclassed Move button's original WndProc
+    gFont: HGDIOBJ = 0;                // current (DPI-scaled) button font
+    gDpi: Integer = 96;                // DPI the bar is currently scaled for
+    gBarW: Integer = BAR_WIDTH;        // scaled bar width
+    gBarH: Integer = BAR_HEIGHT;       // scaled bar height
 
 {*******************************************************************************
 * applyMainGeometry
@@ -132,6 +136,65 @@ begin
 end;
 
 {*******************************************************************************
+* dpiForWindow — DPI of aWnd's monitor (GetDpiForWindow; 96 on older Windows).
+*******************************************************************************}
+function dpiForWindow(aWnd: HWND): Integer;
+type
+    TGetDpi = function(aWnd: HWND): UINT; stdcall;
+var
+    hUser: HMODULE;
+    fn: TGetDpi;
+begin
+    Result := 96;
+    hUser := GetModuleHandleW('user32');
+    if hUser <> 0 then
+    begin
+        fn := TGetDpi(GetProcAddress(hUser, 'GetDpiForWindow'));
+        if Assigned(fn) then
+            Result := Integer(fn(aWnd));
+    end;
+    if Result <= 0 then
+        Result := 96;
+end;
+
+{*******************************************************************************
+* rescaleBar — resizes the bar, its buttons and font for aDpi so it looks right on
+* whichever monitor the window currently sits on.
+*******************************************************************************}
+procedure rescaleBar(aDpi: Integer);
+var
+    btnW: Integer;
+    newFont: HGDIOBJ;
+begin
+    gDpi := aDpi;
+    gBarW := MulDiv(BAR_WIDTH, aDpi, 96);
+    gBarH := MulDiv(BAR_HEIGHT, aDpi, 96);
+    btnW := MulDiv(BTN_WIDTH, aDpi, 96);
+
+    newFont := CreateFontW(-MulDiv(20, aDpi, 96), 0, 0, 0, FW_NORMAL, 0, 0, 0,
+        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, 5,
+        DEFAULT_PITCH or FF_DONTCARE, 'Segoe UI Symbol');
+
+    SetWindowPos(gBarWnd, 0, 0, 0, gBarW, gBarH,
+        SWP_NOMOVE or SWP_NOZORDER or SWP_NOACTIVATE);
+    MoveWindow(gBtnMove, 0, 0, btnW, gBarH, True);
+    MoveWindow(gBtnMin, btnW, 0, btnW, gBarH, True);
+    MoveWindow(gBtnMax, btnW * 2, 0, btnW, gBarH, True);
+    MoveWindow(gBtnClose, btnW * 3, 0, btnW, gBarH, True);
+
+    if newFont <> 0 then
+    begin
+        SendMessageW(gBtnMove, WM_SETFONT, WPARAM(newFont), 1);
+        SendMessageW(gBtnMin, WM_SETFONT, WPARAM(newFont), 1);
+        SendMessageW(gBtnMax, WM_SETFONT, WPARAM(newFont), 1);
+        SendMessageW(gBtnClose, WM_SETFONT, WPARAM(newFont), 1);
+        if gFont <> 0 then
+            DeleteObject(gFont);
+        gFont := newFont;
+    end;
+end;
+
+{*******************************************************************************
 * updateBar
 * Keeps the bar pinned to the top-center of the main window and fades it between
 * a faint idle level and fully opaque depending on whether the cursor is over
@@ -141,6 +204,7 @@ end;
 procedure updateBar;
 var
     wr: TRect;
+    dpi: Integer;
     target: Integer;
     barX, barTop: Integer;
 begin
@@ -151,9 +215,14 @@ begin
         Exit;
     end;
 
-    barX := wr.Left + ((wr.Right - wr.Left) - BAR_WIDTH) div 2;
+    // Match the bar to the DPI of the monitor the window is currently on.
+    dpi := dpiForWindow(gMainWnd);
+    if dpi <> gDpi then
+        rescaleBar(dpi);
+
+    barX := wr.Left + ((wr.Right - wr.Left) - gBarW) div 2;
     barTop := wr.Top;
-    SetWindowPos(gBarWnd, HWND_TOPMOST, barX, barTop, BAR_WIDTH, BAR_HEIGHT,
+    SetWindowPos(gBarWnd, HWND_TOPMOST, barX, barTop, gBarW, gBarH,
         SWP_NOACTIVATE or SWP_SHOWWINDOW);
 
     if cursorOverBar then target := ALPHA_ACTIVE else target := ALPHA_IDLE;
@@ -287,6 +356,7 @@ begin
         DEFAULT_PITCH or FF_DONTCARE, 'Segoe UI Symbol');
     if font = 0 then
         font := GetStockObject(DEFAULT_GUI_FONT);
+    gFont := font;   // tracked so a DPI rescale can free it
     gBtnMove := addButton(UnicodeString(#$2725), ID_MOVE, 0, inst, font);              // move handle
     gBtnMin := addButton(UnicodeString(#$2013), ID_MIN, BTN_WIDTH, inst, font);        // en dash
     gBtnMax := addButton(UnicodeString(#$25A1), ID_MAX, BTN_WIDTH * 2, inst, font);    // square

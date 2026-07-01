@@ -65,6 +65,29 @@ var
 function SetProcessDPIAware: BOOL; stdcall; external 'user32' name 'SetProcessDPIAware';
 
 {*******************************************************************************
+* enablePerMonitorDpi
+* Opts into Per-Monitor-V2 DPI awareness so window/cursor coordinates stay in one
+* physical space across monitors with different DPI (the control bar is a separate
+* window positioned by the main window's rect — without this it lands off-window on
+* mixed-DPI setups). Falls back to system DPI awareness on older Windows.
+*******************************************************************************}
+procedure enablePerMonitorDpi();
+type
+    TSetCtx = function(aValue: HANDLE): BOOL; stdcall;
+var
+    hUser: HMODULE;
+    setCtx: TSetCtx;
+begin
+    setCtx := nil;
+    hUser := GetModuleHandleW('user32');
+    if hUser <> 0 then
+        setCtx := TSetCtx(GetProcAddress(hUser, 'SetProcessDpiAwarenessContext'));
+    // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = (HANDLE)-4
+    if (not Assigned(setCtx)) or (not setCtx(HANDLE(PtrInt(-4)))) then
+        SetProcessDPIAware;
+end;
+
+{*******************************************************************************
 * toUtf8
 * webview's C API expects UTF-8. Under UnicodeString (UTF-16) the bytes must be
 * transcoded before being handed over as PAnsiChar. The returned UTF8String lives
@@ -269,7 +292,7 @@ begin
     // Become DPI-aware before any window is created so cursor, window and
     // metric coordinates share one space (needed for the control bar to track
     // the window) and the web content renders crisply on high-DPI displays.
-    SetProcessDPIAware;
+    enablePerMonitorDpi;
 
     SetExceptionMask([exInvalidOp, exDenormalized, exZeroDivide,
                       exOverflow, exUnderflow, exPrecision]);
