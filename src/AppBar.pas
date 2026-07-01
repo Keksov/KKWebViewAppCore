@@ -335,8 +335,13 @@ end;
 *******************************************************************************}
 function mainWndProc(aWnd: HWND; aMsg: UINT; aWParam: WPARAM; aLParam: LPARAM): LRESULT; stdcall;
 begin
-    if (aMsg = WM_EXITSIZEMOVE) and (not gFull) then
-        saveKioskRect(gMainWnd);
+    if aMsg = WM_EXITSIZEMOVE then
+    begin
+        if gFull then
+            applyMainGeometry(True)   // dragged to another monitor -> fill that monitor
+        else
+            saveKioskRect(gMainWnd);  // remember the moved/resized restored geometry
+    end;
     Result := CallWindowProcW(TFNWndProc(Pointer(gMainOrigProc)), aWnd, aMsg, aWParam, aLParam);
 end;
 
