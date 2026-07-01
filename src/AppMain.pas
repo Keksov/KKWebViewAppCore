@@ -9,15 +9,37 @@ uses
 
 const
     // Shown immediately while services start, so the window never looks frozen.
+    // A spinner plus a live checklist that startServices fills in via acPhase().
+    // acPhase is defined up front and queues calls until __render (after <body>)
+    // is ready, so no early step is lost. All ASCII (the source is ANSI); step
+    // labels come from Pascal.
     SPLASH_HTML =
         '<!doctype html><meta charset="utf-8">' +
-        '<body style="margin:0;height:100vh;display:flex;align-items:center;' +
-        'justify-content:center;background:#1e1e1e;color:#dddddd;' +
-        'font-family:Segoe UI,sans-serif">' +
-        '<div style="text-align:center">' +
-        '<div style="font-size:22px">Starting...</div>' +
-        '<div style="font-size:13px;opacity:.6;margin-top:8px">' +
-        'launching servers, please wait</div></div></body>';
+        '<style>' +
+        'html,body{margin:0;height:100%}' +
+        'body{display:flex;align-items:center;justify-content:center;' +
+        'background:#1e1e1e;color:#e0e0e0;font-family:Segoe UI,Arial,sans-serif}' +
+        '.box{width:min(80vw,360px)}' +
+        '.sp{width:46px;height:46px;margin:0 auto 20px;border:4px solid #333;' +
+        'border-top-color:#22d3ee;border-radius:50%;animation:r 1s linear infinite}' +
+        '@keyframes r{to{transform:rotate(360deg)}}' +
+        '.t{font-size:22px;font-weight:600;text-align:center;margin-bottom:18px}' +
+        '.steps div{color:#8a8a8a;font-size:14px;line-height:1.9}' +
+        '.steps div.active{color:#22d3ee}.steps div.done{color:#4ade80}' +
+        '.steps div::before{content:"\2022";display:inline-block;width:22px;text-align:center}' +
+        '.steps div.active::before{content:"\2026"}' +
+        '.steps div.done::before{content:"\2713"}' +
+        '</style>' +
+        '<script>window.__ph=[];window.acPhase=function(t){window.__ph.push(t);' +
+        'if(window.__render)window.__render()}</script>' +
+        '<body><div class="box"><div class="sp"></div>' +
+        '<div class="t">Starting</div><div class="steps" id="steps"></div></div>' +
+        '<script>window.__c=null;window.__render=function(){' +
+        'var c=document.getElementById("steps");if(!c)return;' +
+        'while(window.__ph.length){var t=window.__ph.shift();' +
+        'if(window.__c)window.__c.className="done";' +
+        'var e=document.createElement("div");e.className="active";e.textContent=t;' +
+        'c.appendChild(e);window.__c=e}};window.__render()</script></body>';
 
 var
     wnd: HWND;
@@ -70,6 +92,49 @@ begin
 end;
 
 {*******************************************************************************
+* doEval
+* Runs on the GUI thread (via webview_dispatch): evaluates the queued JS, then
+* frees the buffer allocated by pushEval.
+*******************************************************************************}
+procedure doEval(aWebView: PWebView; aArg: Pointer); cdecl;
+begin
+    if aArg = nil then
+        Exit;
+    webview_eval(aWebView, PAnsiChar(aArg));
+    FreeMem(aArg);
+end;
+
+{*******************************************************************************
+* pushEval
+* Queues a JS snippet (UTF-8) to run on the GUI thread from any thread. The
+* buffer is handed to doEval, which frees it.
+*******************************************************************************}
+procedure pushEval(const aJs: UTF8String);
+var
+    len: Integer;
+    buf: PAnsiChar;
+begin
+    if gWebView = nil then
+        Exit;
+    len := Length(aJs);
+    GetMem(buf, len + 1);
+    if len > 0 then
+        Move(aJs[1], buf^, len);
+    buf[len] := #0;
+    webview_dispatch(gWebView, @doEval, buf);
+end;
+
+{*******************************************************************************
+* splashPhase
+* Adds/advances a step on the splash checklist (aText must be plain ASCII with
+* no double quotes).
+*******************************************************************************}
+procedure splashPhase(const aText: string);
+begin
+    pushEval(UTF8String('window.acPhase&&acPhase("' + aText + '")'));
+end;
+
+{*******************************************************************************
 * resolveFreePorts
 * Relocates the app to free TCP ports so several AppCore apps can run side by side.
 * The backend always moves to the first bindable port at/after ServerPort. In dev
@@ -111,19 +176,26 @@ begin
     begin
         envPrefix := Format('set PORT=%d&& ', [aCfg.ServerPort]);
         if aCfg.ServerDir <> '' then
+        begin
+            splashPhase('Starting backend');
             launchInConsole(aCfg.ServerDir,
                 '"' + aCfg.BunExe + '" run dev', 'KK Server (dev)', envPrefix, True);
+        end;
         // PORT lets the quasar proxy target the (possibly relocated) backend;
         // --port moves the quasar dev server itself to the chosen free UI port.
         if aCfg.UiDir <> '' then
+        begin
+            splashPhase('Starting interface (dev)');
             launchInConsole(aCfg.UiDir,
                 Format('"%s" run dev -- --port %d', [aCfg.BunExe, aCfg.ReadyPort]),
                 'KK UI (quasar dev)', envPrefix, True);
+        end;
     end
     else
     begin
         if aCfg.BuildUi and (aCfg.UiDir <> '') then
         begin
+            splashPhase('Building interface');
             if not runAndWait(aCfg.UiDir, '"' + aCfg.BunExe + '" run build',
                 'KK UI build', exitCode) then
                 fail('Failed to start UI build (bun run build).');
@@ -133,13 +205,16 @@ begin
 
         if aCfg.ServerDir <> '' then
         begin
+            splashPhase('Starting server');
             envPrefix := Format('set PORT=%d&& ', [aCfg.ServerPort]);
             launchInConsole(aCfg.ServerDir,
                 '"' + aCfg.BunExe + '" run start', 'KK Server', envPrefix, False);
         end;
     end;
 
+    splashPhase('Waiting for services');
     waitForPort(aCfg.ReadyPort, aCfg.ReadyTimeoutSec);
+    splashPhase('Ready');
 end;
 
 {*******************************************************************************
