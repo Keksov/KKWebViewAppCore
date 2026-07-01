@@ -250,10 +250,13 @@ begin
 end;
 
 {*******************************************************************************
-* portBindable
-* True when 127.0.0.1:aPort can be bound right now (nothing is listening on it).
+* portInUse
+* True when something is already listening on 127.0.0.1:aPort. Uses connect()
+* rather than a bind() probe: dev servers (vite/quasar) bind 0.0.0.0 with
+* SO_REUSEADDR, so an overlapping bind to 127.0.0.1 wrongly succeeds — but a
+* connect reliably reports a live listener regardless.
 *******************************************************************************}
-function portBindable(aPort: Integer): Boolean;
+function portInUse(aPort: Integer): Boolean;
 var
     s: TSocket;
     addr: TSockAddrIn;
@@ -266,7 +269,7 @@ begin
     addr.sin_family := AF_INET;
     addr.sin_port := htons(Word(aPort));
     addr.sin_addr.S_addr := htonl($7F000001); // 127.0.0.1
-    Result := bind(s, PSockAddr(@addr), SizeOf(addr)) = 0;
+    Result := connect(s, PSockAddr(@addr), SizeOf(addr)) = 0;
     closesocket(s);
 end;
 
@@ -286,7 +289,7 @@ begin
         port := aStartPort;
         for tries := 0 to aMaxTries - 1 do
         begin
-            if portBindable(port) then
+            if not portInUse(port) then
                 Exit(port);
             Inc(port);
         end;
