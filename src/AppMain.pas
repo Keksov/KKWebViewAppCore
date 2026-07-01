@@ -7,49 +7,18 @@ program AppMain;
 
 uses
     Math, Windows, SysUtils, webview, AppConfig, AppLaunch, AppUpdate,
-    AppWindowState, AppBar;
+    AppWindowState, AppBar, AppSplash;
 
 const
-    // Shown immediately while services start, so the window never looks frozen.
-    // A spinner plus a live checklist that startServices fills in via acPhase().
-    // acPhase is defined up front and queues calls until __render (after <body>)
-    // is ready, so no early step is lost. All ASCII (the source is ANSI); step
-    // labels come from Pascal.
-    SPLASH_HTML =
-        '<!doctype html><meta charset="utf-8">' +
-        '<style>' +
-        'html,body{margin:0;height:100%}' +
-        'body{display:flex;align-items:center;justify-content:center;' +
-        'background:#1e1e1e;color:#e0e0e0;font-family:Segoe UI,Arial,sans-serif}' +
-        '.box{width:min(80vw,360px)}' +
-        '.sp{width:46px;height:46px;margin:0 auto 20px;border:4px solid #333;' +
-        'border-top-color:#22d3ee;border-radius:50%;animation:r 1s linear infinite}' +
-        '@keyframes r{to{transform:rotate(360deg)}}' +
-        '.t{font-size:22px;font-weight:600;text-align:center;margin-bottom:18px}' +
-        '.steps div{color:#8a8a8a;font-size:14px;line-height:1.9}' +
-        '.steps div.active{color:#22d3ee}.steps div.done{color:#4ade80}' +
-        '.steps div::before{content:"\2022";display:inline-block;width:22px;text-align:center}' +
-        '.steps div.active::before{content:"\2026"}' +
-        '.steps div.done::before{content:"\2713"}' +
-        '</style>' +
-        '<script>window.__ph=[];window.__title=null;' +
-        'window.acPhase=function(t){window.__ph.push(t);if(window.__render)window.__render()};' +
-        'window.acTitle=function(t){window.__title=t;if(window.__render)window.__render()}</script>' +
-        '<body><div class="box"><div class="sp"></div>' +
-        '<div class="t">...</div><div class="steps" id="steps"></div></div>' +
-        '<script>window.__c=null;window.__render=function(){' +
-        'if(window.__title!==null){var h=document.querySelector(".t");if(h)h.textContent=window.__title}' +
-        'var c=document.getElementById("steps");if(!c)return;' +
-        'while(window.__ph.length){var t=window.__ph.shift();' +
-        'if(window.__c)window.__c.className="done";' +
-        'var e=document.createElement("div");e.className="active";e.textContent=t;' +
-        'c.appendChild(e);window.__c=e}};window.__render()</script></body>';
+    // How long the native splash lingers (topmost) after the WebView2 window is
+    // shown and navigated, so the app has time to paint underneath before the
+    // splash is removed — avoids a blank-white flash on the swap.
+    SPLASH_LINGER_MS = 700;
 
 var
     wnd: HWND;
     i: Integer;
     w: PWebView;
-    tid: DWORD;
     cfg: TAppConfig;
     cfgErr: string;
     startUrl: string;
@@ -58,6 +27,8 @@ var
     gWebView: PWebView;       // shared with the startup thread
     gConfig: TAppConfig;      // shared with the startup thread
     gStartUtf8: UTF8String;   // resolved target URL (UTF-8), opened once ready
+    gMainWnd: HWND;           // WebView2 window, kept hidden until ready
+    gUseFullScreen: Boolean;  // shared with the reveal callback
     useServices: Boolean;
     useFullScreen: Boolean;
     fullScreenForced: Boolean;
@@ -119,58 +90,6 @@ begin
 end;
 
 {*******************************************************************************
-* doEval
-* Runs on the GUI thread (via webview_dispatch): evaluates the queued JS, then
-* frees the buffer allocated by pushEval.
-*******************************************************************************}
-procedure doEval(aWebView: PWebView; aArg: Pointer); cdecl;
-begin
-    if aArg = nil then
-        Exit;
-    webview_eval(aWebView, PAnsiChar(aArg));
-    FreeMem(aArg);
-end;
-
-{*******************************************************************************
-* pushEval
-* Queues a JS snippet (UTF-8) to run on the GUI thread from any thread. The
-* buffer is handed to doEval, which frees it.
-*******************************************************************************}
-procedure pushEval(const aJs: UTF8String);
-var
-    len: Integer;
-    buf: PAnsiChar;
-begin
-    if gWebView = nil then
-        Exit;
-    len := Length(aJs);
-    GetMem(buf, len + 1);
-    if len > 0 then
-        Move(aJs[1], buf^, len);
-    buf[len] := #0;
-    webview_dispatch(gWebView, @doEval, buf);
-end;
-
-{*******************************************************************************
-* splashPhase
-* Adds/advances a step on the splash checklist (aText must be plain ASCII with
-* no double quotes).
-*******************************************************************************}
-procedure splashPhase(const aText: string);
-begin
-    pushEval(UTF8String('window.acPhase&&acPhase("' + aText + '")'));
-end;
-
-{*******************************************************************************
-* splashTitle
-* Sets the splash heading (aText plain, no double quotes).
-*******************************************************************************}
-procedure splashTitle(const aText: string);
-begin
-    pushEval(UTF8String('window.acTitle&&acTitle("' + aText + '")'));
-end;
-
-{*******************************************************************************
 * tr
 * Picks the Russian (default) or English splash string per gConfig.SplashLang.
 *******************************************************************************}
@@ -220,13 +139,13 @@ var
     exitCode: DWORD;
     envPrefix: string;
 begin
-    splashTitle(tr('Запуск…', 'Starting'));
+    splashSetTitle(tr('Запуск…', 'Starting'));
     if aCfg.Mode = amDev then
     begin
         envPrefix := Format('set PORT=%d&& ', [aCfg.ServerPort]);
         if aCfg.ServerDir <> '' then
         begin
-            splashPhase(tr('Запуск сервера', 'Starting backend'));
+            splashSetPhase(tr('Запуск сервера', 'Starting backend'));
             launchInConsole(aCfg.ServerDir,
                 '"' + aCfg.BunExe + '" run dev', 'KK Server (dev)', envPrefix, True);
         end;
@@ -234,7 +153,7 @@ begin
         // --port moves the quasar dev server itself to the chosen free UI port.
         if aCfg.UiDir <> '' then
         begin
-            splashPhase(tr('Запуск интерфейса', 'Starting interface'));
+            splashSetPhase(tr('Запуск интерфейса', 'Starting interface'));
             launchInConsole(aCfg.UiDir,
                 Format('"%s" run dev -- --port %d', [aCfg.BunExe, aCfg.ReadyPort]),
                 'KK UI (quasar dev)', envPrefix, True);
@@ -244,7 +163,7 @@ begin
     begin
         if aCfg.BuildUi and (aCfg.UiDir <> '') then
         begin
-            splashPhase(tr('Сборка интерфейса', 'Building interface'));
+            splashSetPhase(tr('Сборка интерфейса', 'Building interface'));
             if not runAndWait(aCfg.UiDir, '"' + aCfg.BunExe + '" run build',
                 'KK UI build', exitCode) then
                 fail('Failed to start UI build (bun run build).');
@@ -254,37 +173,45 @@ begin
 
         if aCfg.ServerDir <> '' then
         begin
-            splashPhase(tr('Запуск сервера', 'Starting server'));
+            splashSetPhase(tr('Запуск сервера', 'Starting server'));
             envPrefix := Format('set PORT=%d&& ', [aCfg.ServerPort]);
             launchInConsole(aCfg.ServerDir,
                 '"' + aCfg.BunExe + '" run start', 'KK Server', envPrefix, False);
         end;
     end;
 
-    splashPhase(tr('Ожидание готовности', 'Waiting for services'));
+    splashSetPhase(tr('Ожидание готовности', 'Waiting for services'));
     waitForPort(aCfg.ReadyPort, aCfg.ReadyTimeoutSec);
-    splashPhase(tr('Готово', 'Ready'));
+    splashSetPhase(tr('Готово', 'Ready'));
 end;
 
 {*******************************************************************************
-* navigateWhenReady
-* Runs on the GUI thread (via webview_dispatch) once services are up: switches
-* the window from the splash page to the real application URL.
+* revealWhenReady
+* Runs on the GUI thread (via webview_dispatch) once services are up: shows the
+* (until-now hidden) WebView2 window behind the still-topmost splash, adds the
+* control bar in full-screen mode, then navigates to the real application URL.
+* The worker then lingers briefly so the page paints before the splash is closed.
 *******************************************************************************}
-procedure navigateWhenReady(aWebView: PWebView; aArg: Pointer); cdecl;
+procedure revealWhenReady(aWebView: PWebView; aArg: Pointer); cdecl;
 begin
+    ShowWindow(gMainWnd, SW_SHOW);
+    if gUseFullScreen then
+        createControlBar(gMainWnd, True);
     webview_navigate(aWebView, PAnsiChar(gStartUtf8));
+    SetForegroundWindow(gMainWnd);
 end;
 
 {*******************************************************************************
 * startupThread
 * Worker thread: starts the services and waits for readiness off the GUI thread,
-* then asks the GUI thread to navigate to the application URL.
+* then reveals the WebView2 window and retires the native splash.
 *******************************************************************************}
-function startupThread(aParam: Pointer): DWORD; stdcall;
+function startupThread(aParam: Pointer): PtrInt;
 begin
     startServices(gConfig);
-    webview_dispatch(gWebView, @navigateWhenReady, nil);
+    webview_dispatch(gWebView, @revealWhenReady, nil);
+    Sleep(SPLASH_LINGER_MS);   // let WebView2 paint under the topmost splash
+    stopSplash();
     Result := 0;
 end;
 
@@ -342,13 +269,28 @@ begin
     end;
 
     gStartUtf8 := toUtf8(startUrl);
+    gUseFullScreen := useFullScreen;
+
+    // Show the native Pixie banner FIRST so the user gets instant feedback while
+    // WebView2's (slow) environment init and the services start behind it.
+    if useServices then
+        startSplash(tr('Загрузка…', 'Loading'));
 
     w := webview_create(WebView_NoDevTools, nil);
     if w = nil then
+    begin
+        stopSplash();
         fail('Failed to create WebView2 instance.'#13#10 +
             'Make sure Microsoft Edge WebView2 Runtime is installed.');
+    end;
     gWebView := w;
     wnd := HWND(webview_get_window(w));
+    gMainWnd := wnd;
+
+    // Keep the WebView2 window hidden behind the splash until the app is ready,
+    // so the swap shows a painted UI instead of a blank frame.
+    if useServices then
+        ShowWindow(wnd, SW_HIDE);
 
     webview_set_title(w, PAnsiChar(toUtf8('AppCore')));
 
@@ -357,9 +299,12 @@ begin
         SetWindowLongW(wnd, GWL_STYLE, Integer(WS_POPUP or WS_VISIBLE));
         SetWindowPos(wnd, HWND_TOP, 0, 0,
             GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN),
-            SWP_FRAMECHANGED);
+            SWP_FRAMECHANGED or SWP_NOACTIVATE);
         // Borderless window has no system buttons; add an RDP-style floating bar.
-        createControlBar(wnd, True);
+        // With services this is deferred to revealWhenReady so it does not show
+        // over the splash; without services the window is up now.
+        if not useServices then
+            createControlBar(wnd, True);
     end
     else
     begin
@@ -375,14 +320,11 @@ begin
         'if(e.key==="Escape")window.__appcoreExit();' +
         '});')));
 
-    // With services, show the splash immediately and let a worker thread start
-    // the servers and navigate when ready, so the window is never invisible
-    // during the (possibly long) startup. Without services, open the URL now.
+    // With services, a worker thread starts the servers, pushes status to the
+    // native splash, then reveals the WebView2 window and closes the splash.
+    // Without services, open the URL right away.
     if useServices then
-    begin
-        webview_set_html(w, PAnsiChar(toUtf8(SPLASH_HTML)));
-        CreateThread(nil, 0, @startupThread, nil, 0, tid);
-    end
+        BeginThread(@startupThread, nil)
     else
         webview_navigate(w, PAnsiChar(gStartUtf8));
 

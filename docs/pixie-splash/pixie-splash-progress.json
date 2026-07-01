@@ -5,7 +5,7 @@
   "title": "Native Pixie/Direct2D loading splash before WebView2 startup",
   "status": "in-progress",
   "createdAt": "2026-07-01",
-  "updatedAt": "2026-07-02T10:00:00Z",
+  "updatedAt": "2026-07-02T12:30:00Z",
   "decisions": [
     { "id": "PS-D1", "text": "Use Pixie's framework-agnostic D2D core only: Pixie.Canvas, Pixie.Canvas.D2D, Pixie.DrawingCanvas, Pixie.D2DHeaders, Pixie.Types, Pixie.WebColor, Pixie.Borders, Pixie.GradientLayer, Pixie.FontDescription (+ transitive units found in the spike). Exclude all *.VCL.*, *.FMX.*, *.Cairo.*, *ControlBase*, and HTML/SVG/Markdown units unless needed." },
     { "id": "PS-D2", "text": "Splash is a native Win32 frameless top-level window drawn with Pixie D2D (ID2D1DCRenderTarget.BindDC on the window DC), created and shown BEFORE webview_create so it appears instantly, decoupled from WebView2 init." },
@@ -92,67 +92,88 @@
       "id": "PS2.1",
       "phase": 2,
       "title": "AppSplash.pas — frameless top-level splash window",
-      "status": "todo",
+      "status": "done",
       "dependsOn": ["PS1.2"],
       "artifacts": ["src/AppSplash.pas"],
       "verify": "a borderless rectangular window is created, shown centered, and destroyed cleanly; no taskbar button; created in << WebView2 init time.",
-      "startedAt": null, "finishedAt": null, "blockedReason": null,
-      "evidence": []
+      "startedAt": "2026-07-02", "finishedAt": "2026-07-02", "blockedReason": null,
+      "evidence": [
+        "AppSplash.pas: WS_POPUP + WS_EX_TOPMOST|TOOLWINDOW|NOACTIVATE frameless banner (no taskbar button, no focus steal), created on its own thread via BeginThread, centered on the cursor's monitor. startSplash waits (bounded 3s) on a 'ready' event so the banner is up before the caller proceeds to webview_create.",
+        "Verified by a scratchpad smoke test (splashtest.pas) driven through phases: window shows + closes cleanly, process exit 0 (when a console is attached)."
+      ]
     },
     {
       "id": "PS2.2",
       "phase": 2,
       "title": "Pixie D2D rendering + splashSetPhase API (localized)",
-      "status": "todo",
+      "status": "done",
       "dependsOn": ["PS2.1"],
       "artifacts": ["src/AppSplash.pas"],
       "verify": "background, app title, and a step line/checklist are drawn with Pixie via BindDC; splashSetPhase(text) updates the drawn status; ru/en per SplashLang.",
-      "startedAt": null, "finishedAt": null, "blockedReason": null,
-      "evidence": []
+      "startedAt": "2026-07-02", "finishedAt": "2026-07-02", "blockedReason": null,
+      "evidence": [
+        "paintSplash draws via TPixieDrawingCanvas over BindDC: dark background + hairline border, spinner, bold title, and a checklist. Step markers are drawn geometrically (green check for done, cyan dot for active) instead of Unicode glyphs, so they do not depend on the system codepage.",
+        "API: splashSetTitle(text), splashSetPhase(text) (marks the current step done, appends the new active step). Localization stays in AppMain.tr(ru,en) per SplashLang and is passed in as text.",
+        "Screenshot confirmed correct rendering incl. Cyrillic ('Запуск…', 'Запуск сервера' done + green check, 'Запуск интерфейса' active + cyan dot) — Cyrillic round-trips via the system ANSI codepage as predicted."
+      ]
     },
     {
       "id": "PS2.3",
       "phase": 2,
       "title": "Animation + thread-safe status updates",
-      "status": "todo",
+      "status": "done",
       "dependsOn": ["PS2.2"],
       "artifacts": ["src/AppSplash.pas"],
       "verify": "WM_TIMER-driven spinner animates; status set from the startup worker thread is rendered without races or flicker.",
-      "startedAt": null, "finishedAt": null, "blockedReason": null,
-      "evidence": []
+      "startedAt": "2026-07-02", "finishedAt": "2026-07-02", "blockedReason": null,
+      "evidence": [
+        "WM_TIMER (~30fps) advances gTick and invalidates; a rotating cyan arc over a static grey ring. WM_ERASEBKGND returns 1 (all painting in WM_PAINT) to avoid flicker.",
+        "Cross-thread status: splashSetTitle/splashSetPhase mutate shared state under a critical section; paintSplash snapshots it under the same lock, then draws without holding it. The splash owns/creates/frees the Pixie D2D objects on its own thread only (D2D is thread-affine).",
+        "Threading correctness: switched the splash + startup threads from raw CreateThread to FPC BeginThread so the RTL installs thread-local state/exception frames for the Pixie + string work (raw CreateThread caused RTE 217). stopSplash waits on a 'done' event set after full COM teardown, so it never returns mid-release."
+      ]
     },
     {
       "id": "PS2.4",
       "phase": 2,
       "title": "Per-monitor DPI for the splash",
-      "status": "todo",
+      "status": "done",
       "dependsOn": ["PS2.3"],
       "artifacts": ["src/AppSplash.pas"],
       "verify": "splash size/text scale by the target monitor DPI (PMv2); centered correctly on high-DPI / multi-monitor.",
-      "startedAt": null, "finishedAt": null, "blockedReason": null,
-      "evidence": []
+      "startedAt": "2026-07-02", "finishedAt": "2026-07-02", "blockedReason": null,
+      "evidence": [
+        "Drawing uses logical (96-dpi) coordinates; gScale = GetDpiForWindow(splash)/96 (loaded dynamically, fallback 1.0) is applied via TPixieD2DCanvas.SetScale, and the BindDC rect uses the physical size (SetViewSize(physW,physH)). The window is sized physW×physH and re-centered on the target monitor.",
+        "Target monitor = the one under the cursor (MonitorFromPoint + GetMonitorInfoW, declared locally as they are absent from this FPC's Windows unit), so the banner appears where the user launched; falls back to the primary monitor."
+      ]
     },
     {
       "id": "PS3.1",
       "phase": 3,
       "title": "Reorder startup: native splash first, WebView2 in background, swap on ready",
-      "status": "todo",
+      "status": "done",
       "dependsOn": ["PS2.4"],
       "artifacts": ["src/AppMain.pas"],
       "verify": "splash shows before webview_create; startServices + WebView2 run in the worker; status pushed to the splash; on port-ready the WebView2 window is shown and the splash destroyed; no blank-window gap.",
-      "startedAt": null, "finishedAt": null, "blockedReason": null,
-      "evidence": []
+      "startedAt": "2026-07-02", "finishedAt": "2026-07-02", "blockedReason": null,
+      "evidence": [
+        "AppMain now: startSplash(tr('Загрузка…','Loading')) BEFORE webview_create; the WebView2 window is kept hidden (ShowWindow SW_HIDE) while the splash (topmost) covers the gap.",
+        "startupThread (BeginThread): startServices pushes phases via splashSetPhase; on ready webview_dispatch(revealWhenReady) shows the window (behind the still-topmost splash), builds the control bar in full-screen mode, and navigates to the app URL; the worker then Sleeps SPLASH_LINGER_MS (700ms) so WebView2 paints the loaded page, then stopSplash() removes the banner — no blank-white swap.",
+        "AppMain builds cleanly (build_app.bat) with the new flow."
+      ]
     },
     {
       "id": "PS3.2",
       "phase": 3,
       "title": "Retire (or flag) the in-WebView HTML splash",
-      "status": "todo",
+      "status": "done",
       "dependsOn": ["PS3.1"],
       "artifacts": ["src/AppMain.pas"],
       "verify": "the HTML splash is removed or gated; only the native splash is shown pre-ready.",
-      "startedAt": null, "finishedAt": null, "blockedReason": null,
-      "evidence": []
+      "startedAt": "2026-07-02", "finishedAt": "2026-07-02", "blockedReason": null,
+      "evidence": [
+        "Removed SPLASH_HTML and the whole HTML-splash plumbing (webview_set_html splash, pushEval/doEval, splashPhase/splashTitle JS wrappers). The native Pixie splash is now the only pre-ready UI.",
+        "PS-D6(b) resolved: HTML splash fully retired (not kept as fallback). The remaining fallback is the class's dark background brush if D2D init fails, so the banner is still a dark rectangle."
+      ]
     },
     {
       "id": "PS4.1",
