@@ -26,6 +26,8 @@ procedure saveKioskFull(aFull: Boolean);
 function loadKioskFull(out aFull: Boolean): Boolean;
 procedure saveKioskRect(aWnd: HWND);
 function loadKioskRect(out aLeft, aTop, aRight, aBottom: Integer): Boolean;
+procedure saveKioskMon(aLeft, aTop, aRight, aBottom: Integer);
+function loadKioskMon(out aLeft, aTop, aRight, aBottom: Integer): Boolean;
 
 implementation
 
@@ -392,6 +394,29 @@ begin
     if (aRight - aLeft <= 0) or (aBottom - aTop <= 0) then
         Exit;
     Result := True;
+end;
+
+{*******************************************************************************
+* saveKioskMon / loadKioskMon — rectangle of the monitor a fullscreen kiosk window
+* was on (used to restore it to the same monitor, or the nearest one if gone).
+*******************************************************************************}
+procedure saveKioskMon(aLeft, aTop, aRight, aBottom: Integer);
+begin
+    setStateValue('kioskmon', Format('%d %d %d %d', [aLeft, aTop, aRight, aBottom]));
+end;
+
+function loadKioskMon(out aLeft, aTop, aRight, aBottom: Integer): Boolean;
+var
+    rest: string;
+begin
+    Result := False;
+    if not readValue('kioskmon', rest) then
+        Exit;
+    rest := Trim(rest);
+    if not (nextInt(rest, aLeft) and nextInt(rest, aTop)
+            and nextInt(rest, aRight) and nextInt(rest, aBottom)) then
+        Exit;
+    Result := (aRight > aLeft) and (aBottom > aTop);
 end;
 
 end.
