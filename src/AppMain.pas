@@ -22,7 +22,6 @@ const
 var
     wnd: HWND;
     i: Integer;
-    freePort: Integer;
     w: PWebView;
     tid: DWORD;
     cfg: TAppConfig;
@@ -71,6 +70,32 @@ begin
 end;
 
 {*******************************************************************************
+* resolveFreePorts
+* Relocates the app to free TCP ports so several AppCore apps can run side by side.
+* The backend always moves to the first bindable port at/after ServerPort. In dev
+* the quasar dev-server port (ReadyPort/DevUrl) is relocated too. StartUrl — the URL
+* the window opens — is rewritten to match (backend in prod, UI dev server in dev).
+*******************************************************************************}
+procedure resolveFreePorts(var aCfg: TAppConfig);
+var
+    uiPort: Integer;
+begin
+    aCfg.ServerPort := findFreePort(aCfg.ServerPort, 50);
+    if aCfg.Mode = amDev then
+    begin
+        uiPort := findFreePort(aCfg.ReadyPort, 50); // ReadyPort = quasar dev port in dev
+        aCfg.DevUrl := Format('http://localhost:%d/', [uiPort]);
+        aCfg.StartUrl := aCfg.DevUrl;
+        aCfg.ReadyPort := uiPort;
+    end
+    else
+    begin
+        aCfg.ReadyPort := aCfg.ServerPort;
+        aCfg.StartUrl := Format('http://localhost:%d/', [aCfg.ServerPort]);
+    end;
+end;
+
+{*******************************************************************************
 * startServices
 * Starts backend/frontend processes described by the config, then waits for the
 * target port to become reachable. In dev mode the bun/quasar dev servers run in
@@ -84,12 +109,16 @@ var
 begin
     if aCfg.Mode = amDev then
     begin
+        envPrefix := Format('set PORT=%d&& ', [aCfg.ServerPort]);
         if aCfg.ServerDir <> '' then
             launchInConsole(aCfg.ServerDir,
-                '"' + aCfg.BunExe + '" run dev', 'KK Server (dev)', '', True);
+                '"' + aCfg.BunExe + '" run dev', 'KK Server (dev)', envPrefix, True);
+        // PORT lets the quasar proxy target the (possibly relocated) backend;
+        // --port moves the quasar dev server itself to the chosen free UI port.
         if aCfg.UiDir <> '' then
             launchInConsole(aCfg.UiDir,
-                '"' + aCfg.BunExe + '" run dev', 'KK UI (quasar dev)', '', True);
+                Format('"%s" run dev -- --port %d', [aCfg.BunExe, aCfg.ReadyPort]),
+                'KK UI (quasar dev)', envPrefix, True);
     end
     else
     begin
@@ -176,19 +205,8 @@ begin
     begin
         if not loadAppConfig(configPath, cfg, cfgErr) then
             fail(cfgErr);
-        // Avoid port clashes when several AppCore apps run at once: in prod, pick a
-        // free port at/after the configured one and open the window on THAT port, so
-        // we never navigate to another app's server already holding ServerPort.
-        if cfg.Mode = amProd then
-        begin
-            freePort := findFreePort(cfg.ServerPort, 50);
-            if freePort <> cfg.ServerPort then
-            begin
-                cfg.ServerPort := freePort;
-                cfg.ReadyPort := freePort;
-                cfg.StartUrl := Format('http://localhost:%d/', [freePort]);
-            end;
-        end;
+        // Relocate to free ports so several AppCore apps can run at once.
+        resolveFreePorts(cfg);
         startUrl := cfg.StartUrl;
         gConfig := cfg;
         if not fullScreenForced then
