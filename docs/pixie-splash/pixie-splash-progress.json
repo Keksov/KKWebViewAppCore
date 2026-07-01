@@ -5,7 +5,7 @@
   "title": "Native Pixie/Direct2D loading splash before WebView2 startup",
   "status": "done",
   "createdAt": "2026-07-01",
-  "updatedAt": "2026-07-02T13:00:00Z",
+  "updatedAt": "2026-07-02T14:00:00Z",
   "decisions": [
     { "id": "PS-D1", "text": "Use Pixie's framework-agnostic D2D core only: Pixie.Canvas, Pixie.Canvas.D2D, Pixie.DrawingCanvas, Pixie.D2DHeaders, Pixie.Types, Pixie.WebColor, Pixie.Borders, Pixie.GradientLayer, Pixie.FontDescription (+ transitive units found in the spike). Exclude all *.VCL.*, *.FMX.*, *.Cairo.*, *ControlBase*, and HTML/SVG/Markdown units unless needed." },
     { "id": "PS-D2", "text": "Splash is a native Win32 frameless top-level window drawn with Pixie D2D (ID2D1DCRenderTarget.BindDC on the window DC), created and shown BEFORE webview_create so it appears instantly, decoupled from WebView2 init." },
@@ -201,6 +201,36 @@
       "evidence": [
         "AGENTS.md: added a 'Startup splash (native Pixie/Direct2D)' section and documented the Pixie build dependency (referenced from EchoScript; +fcl-image/paszlib/hash/pasjpeg).",
         "Ledger: all steps PS0.1..PS4.2 done. Only the owner's in-app visual confirmation remains (manual gate, PS4.1)."
+      ]
+    },
+    {
+      "id": "PS5.1",
+      "phase": 5,
+      "title": "Profile startup: find why the splash appears slowly",
+      "status": "done",
+      "dependsOn": ["PS4.2"],
+      "artifacts": ["src/AppProfile.pas", "src/AppMain.pas", "src/AppSplash.pas"],
+      "verify": "high-res timing of each startup phase captured to a log; the dominant cost identified.",
+      "startedAt": "2026-07-02", "finishedAt": "2026-07-02", "blockedReason": null,
+      "evidence": [
+        "Added AppProfile.pas (QueryPerformanceCounter marks, thread-safe, zero-cost when disabled) + marks across AppMain and the splash thread. Flags: --profile-splash (log time-to-splash and exit), --profile (log at run-loop entry). Log: %TEMP%\\appcore-startup-profile.log.",
+        "Finding (5 runs, Mode=dev): time-to-splash ~4210ms, of which resolveFreePorts = ~4080ms. All else tiny: pre-main (DLL load+RTL) ~17ms, dpi/args/config/autoupdate <1ms, splash thread ~110ms (D2D/DirectWrite factory ~75ms + window ~12ms + first paint ~23ms).",
+        "Root cause: findFreePort -> portInUse did a BLOCKING connect() to 127.0.0.1:4300 and :9000; on this machine a free loopback port is not refused instantly (a security/firewall filter delays the RST ~2s), so two probes cost ~4s -- and they ran before the splash."
+      ]
+    },
+    {
+      "id": "PS5.2",
+      "phase": 5,
+      "title": "Fix: non-blocking port probe + resolve ports behind the splash",
+      "status": "done",
+      "dependsOn": ["PS5.1"],
+      "artifacts": ["src/AppLaunch.pas", "src/AppMain.pas"],
+      "verify": "splash appears in well under a second; port resolution no longer stalls the splash.",
+      "startedAt": "2026-07-02", "finishedAt": "2026-07-02", "blockedReason": null,
+      "evidence": [
+        "portInUse rewritten as a non-blocking connect + select with a 150ms timeout: a live loopback listener still accepts in ~1ms (fast in-use detection); a free port that is not refused instantly times out at 150ms and is treated as free -- no multi-second stall.",
+        "resolveFreePorts moved to AFTER startSplash (behind the visible banner); applyExeAutoUpdate stays before the splash so a self-update relaunch never flashes two splashes.",
+        "Re-profiled (4 runs): time-to-splash ~100-145ms (from process start ~120-160ms), a ~30x improvement. Remaining cost is the unavoidable Direct2D/DirectWrite factory init (~70-100ms). Redeployed to KKLeftRight/SoundTrainer/MindWaveCore."
       ]
     }
   ]

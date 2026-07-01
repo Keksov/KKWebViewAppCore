@@ -255,22 +255,60 @@ end;
 * rather than a bind() probe: dev servers (vite/quasar) bind 0.0.0.0 with
 * SO_REUSEADDR, so an overlapping bind to 127.0.0.1 wrongly succeeds — but a
 * connect reliably reports a live listener regardless.
+*
+* The connect is NON-BLOCKING with a short timeout: a live loopback listener
+* accepts within a millisecond, so it is detected fast; a free port that is not
+* refused instantly (some security/firewall filters delay the RST on loopback by
+* ~2s) times out quickly and is correctly treated as free — instead of stalling
+* seconds per probe on the startup path.
 *******************************************************************************}
 function portInUse(aPort: Integer): Boolean;
+const
+    PROBE_MS = 150;
 var
     s: TSocket;
     addr: TSockAddrIn;
+    nonBlock: u_long;
+    wfds: TFDSet;
+    tv: TTimeVal;
+    sel: LongInt;
+    soErr: LongInt;
+    soLen: LongInt;
 begin
     Result := False;
     s := socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if s = INVALID_SOCKET then
         Exit;
-    FillChar(addr, SizeOf(addr), 0);
-    addr.sin_family := AF_INET;
-    addr.sin_port := htons(Word(aPort));
-    addr.sin_addr.S_addr := htonl($7F000001); // 127.0.0.1
-    Result := connect(s, PSockAddr(@addr), SizeOf(addr)) = 0;
-    closesocket(s);
+    try
+        nonBlock := 1;
+        ioctlsocket(s, LongInt(FIONBIO), nonBlock);
+
+        FillChar(addr, SizeOf(addr), 0);
+        addr.sin_family := AF_INET;
+        addr.sin_port := htons(Word(aPort));
+        addr.sin_addr.S_addr := htonl($7F000001); // 127.0.0.1
+
+        if connect(s, PSockAddr(@addr), SizeOf(addr)) = 0 then
+            Exit(True);                               // connected immediately
+        if WSAGetLastError <> WSAEWOULDBLOCK then
+            Exit(False);                              // refused/error now => free
+
+        FD_ZERO(wfds);
+        FD_SET(s, wfds);
+        tv.tv_sec := 0;
+        tv.tv_usec := PROBE_MS * 1000;
+        sel := select(0, nil, @wfds, nil, @tv);
+        if sel <= 0 then
+            Exit(False);                              // timeout => treat as free
+
+        // Writable: distinguish a real connection (SO_ERROR = 0) from a refusal.
+        soErr := 0;
+        soLen := SizeOf(soErr);
+        if getsockopt(s, SOL_SOCKET, SO_ERROR, PAnsiChar(@soErr), soLen) = 0 then
+            Result := soErr = 0;
+    finally
+        closesocket(s);
+    end;
 end;
 
 {*******************************************************************************

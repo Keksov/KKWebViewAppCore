@@ -7,7 +7,7 @@ program AppMain;
 
 uses
     Math, Windows, SysUtils, webview, AppConfig, AppLaunch, AppUpdate,
-    AppWindowState, AppBar, AppSplash;
+    AppWindowState, AppBar, AppSplash, AppProfile;
 
 const
     // How long the native splash lingers (topmost) after the WebView2 window is
@@ -32,6 +32,8 @@ var
     useServices: Boolean;
     useFullScreen: Boolean;
     fullScreenForced: Boolean;
+    profileHalt: Boolean;     // --profile-splash: log the startup profile and exit
+    profPath: string;
 
 function SetProcessDPIAware: BOOL; stdcall; external 'user32' name 'SetProcessDPIAware';
 
@@ -216,10 +218,23 @@ begin
 end;
 
 begin
+    // Optional startup profiling (enabled as early as possible so the first mark
+    // is representative). --profile-splash logs the time-to-splash and exits.
+    profileHalt := False;
+    for i := 1 to ParamCount do
+        if SameText(ParamStr(i), '--profile') or SameText(ParamStr(i), '--profile-splash') then
+        begin
+            profEnable;
+            if SameText(ParamStr(i), '--profile-splash') then
+                profileHalt := True;
+        end;
+    profMark('main-entry');
+
     // Become DPI-aware before any window is created so cursor, window and
     // metric coordinates share one space (needed for the control bar to track
     // the window) and the web content renders crisply on high-DPI displays.
     enablePerMonitorDpi;
+    profMark('dpi-aware');
 
     SetExceptionMask([exInvalidOp, exDenormalized, exZeroDivide,
                       exOverflow, exUnderflow, exPrecision]);
@@ -251,32 +266,58 @@ begin
             configPath := defaultCfg;
     end;
 
+    profMark('args-parsed');
     useServices := configPath <> '';
     if useServices then
     begin
         if not loadAppConfig(configPath, cfg, cfgErr) then
             fail(cfgErr);
+        profMark('config-loaded');
         // Self-update from ExeAutoUpdatePath: if a newer binary is staged, swap it
-        // in and relaunch before doing anything else.
+        // in and relaunch before doing anything else (a relaunch must happen
+        // before any splash is shown, to avoid flashing two splashes).
         if cfg.ExeAutoUpdate and applyExeAutoUpdate(cfg.ExeAutoUpdatePath) then
             Halt(0);
-        // Relocate to free ports so several AppCore apps can run at once.
-        resolveFreePorts(cfg);
-        startUrl := cfg.StartUrl;
-        gConfig := cfg;
+        profMark('autoupdate-checked');
+        gConfig := cfg;                    // SplashLang for the splash title / tr()
         if not fullScreenForced then
             useFullScreen := cfg.FullScreen;
     end;
 
-    gStartUtf8 := toUtf8(startUrl);
     gUseFullScreen := useFullScreen;
+    profMark('pre-splash');
 
-    // Show the native Pixie banner FIRST so the user gets instant feedback while
-    // WebView2's (slow) environment init and the services start behind it.
+    // Show the native Pixie banner NOW — before the TCP port probing, which can
+    // take a while on some machines (loopback RSTs get delayed by security
+    // filters). The splash appears within a frame; the slow work runs behind it.
     if useServices then
         startSplash(tr('Загрузка…', 'Loading'));
+    profMark('splash-visible');
+
+    // --profile-splash: we only wanted the time-to-splash; dump it and exit
+    // before the port probing / WebView2 / services.
+    if profileHalt then
+    begin
+        stopSplash();
+        profPath := IncludeTrailingPathDelimiter(GetTempDir) + 'appcore-startup-profile.log';
+        profFlush(profPath);
+        Halt(0);
+    end;
+
+    // Relocate to free ports (so several AppCore apps can coexist) behind the
+    // visible splash; the results feed the services and the URL opened on ready.
+    if useServices then
+    begin
+        resolveFreePorts(cfg);
+        gConfig := cfg;
+        startUrl := cfg.StartUrl;
+    end;
+    profMark('ports-resolved');
+
+    gStartUtf8 := toUtf8(startUrl);
 
     w := webview_create(WebView_NoDevTools, nil);
+    profMark('webview-created');
     if w = nil then
     begin
         stopSplash();
@@ -327,6 +368,10 @@ begin
         BeginThread(@startupThread, nil)
     else
         webview_navigate(w, PAnsiChar(gStartUtf8));
+
+    profMark('run-loop-enter');
+    if profEnabled then
+        profFlush(IncludeTrailingPathDelimiter(GetTempDir) + 'appcore-startup-profile.log');
 
     webview_run(w);
 

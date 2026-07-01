@@ -30,7 +30,7 @@ procedure stopSplash();
 implementation
 
 uses
-    Windows, ActiveX, SysUtils,
+    Windows, ActiveX, SysUtils, AppProfile,
     Pixie.WebColor, Pixie.Canvas, Pixie.Canvas.D2D, Pixie.DrawingCanvas;
 
 const
@@ -299,7 +299,9 @@ var
     rc:   TRect;
     x, y: Integer;
 begin
+    profMark('splash:thread-entry');
     CoInitializeEx(nil, COINIT_APARTMENTTHREADED);
+    profMark('splash:co-init');
     inst := GetModuleHandleW(nil);
 
     FillChar(wc, SizeOf(wc), 0);
@@ -313,6 +315,7 @@ begin
 
     gCanvas := TPixieD2DCanvas.Create;
     gDraw := TPixieDrawingCanvas.Create;
+    profMark('splash:canvas-created');
 
     targetMonitorRect(rc);
     x := rc.Left + ((rc.Right - rc.Left) - LOGICAL_W) div 2;
@@ -322,6 +325,7 @@ begin
     // shown) WebView2 window; no-activate => does not steal focus.
     gWnd := CreateWindowExW(WS_EX_TOPMOST or WS_EX_TOOLWINDOW or WS_EX_NOACTIVATE,
         SPLASH_CLASS, '', WS_POPUP, x, y, LOGICAL_W, LOGICAL_H, 0, 0, inst, nil);
+    profMark('splash:window-created');
 
     if gWnd <> 0 then
     begin
@@ -336,7 +340,8 @@ begin
 
         SetTimer(gWnd, TIMER_ID, TIMER_MS, nil);
         ShowWindow(gWnd, SW_SHOWNOACTIVATE);
-        UpdateWindow(gWnd);
+        UpdateWindow(gWnd);          // forces the first D2D BindDC/paint synchronously
+        profMark('splash:first-paint');
     end;
 
     if gReady <> 0 then

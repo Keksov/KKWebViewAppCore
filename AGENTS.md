@@ -54,6 +54,19 @@ blank-white swap). The old in-WebView HTML splash was removed.
 
 Splash language follows the `SplashLang` cfg key (`ru` default / `en`).
 
+### Startup profiling
+
+`AppProfile.pas` is a zero-overhead-when-disabled high-res profiler. Run with
+`--profile-splash` to log the time-to-splash and exit (before WebView2 /
+services), or `--profile` to log the full startup on entry to the run loop. The
+log is appended to `%TEMP%\appcore-startup-profile.log` (per-step + cumulative
+ms, incl. a pre-main DLL-load/RTL figure and the splash-thread D2D init).
+
+Port resolution runs **behind** the splash and uses a non-blocking, 150 ms-bounded
+connect probe (`AppLaunch.portInUse`): a blocking probe stalled ~2 s per free
+loopback port on machines where a security filter delays the RST, which used to
+push the splash out by ~4 s.
+
 ## Config
 
 FPC config: `build\win_x64\fpc-x64.cfg`
