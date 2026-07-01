@@ -22,6 +22,7 @@ const
 var
     wnd: HWND;
     i: Integer;
+    freePort: Integer;
     w: PWebView;
     tid: DWORD;
     cfg: TAppConfig;
@@ -175,6 +176,19 @@ begin
     begin
         if not loadAppConfig(configPath, cfg, cfgErr) then
             fail(cfgErr);
+        // Avoid port clashes when several AppCore apps run at once: in prod, pick a
+        // free port at/after the configured one and open the window on THAT port, so
+        // we never navigate to another app's server already holding ServerPort.
+        if cfg.Mode = amProd then
+        begin
+            freePort := findFreePort(cfg.ServerPort, 50);
+            if freePort <> cfg.ServerPort then
+            begin
+                cfg.ServerPort := freePort;
+                cfg.ReadyPort := freePort;
+                cfg.StartUrl := Format('http://localhost:%d/', [freePort]);
+            end;
+        end;
         startUrl := cfg.StartUrl;
         gConfig := cfg;
         if not fullScreenForced then

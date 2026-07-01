@@ -26,6 +26,11 @@ function runAndWait(const aWorkDir, aCommand, aTitle: string; out aExitCode: DWO
   aTimeoutSec elapses. Returns True once the port is reachable. }
 function waitForPort(aPort, aTimeoutSec: Integer): Boolean;
 
+{ Returns the first bindable 127.0.0.1 port at or after aStartPort (scanning up to
+  aMaxTries ports). Lets several AppCore apps coexist instead of fighting over one
+  fixed port. Falls back to aStartPort if none is found. }
+function findFreePort(aStartPort, aMaxTries: Integer): Integer;
+
 { Kills every process launched through this unit (dev servers, their bun/node
   children and the console windows). Safe to call when nothing was launched. }
 procedure terminateProcessGroup;
@@ -238,6 +243,52 @@ begin
                 closesocket(s);
             end;
             Sleep(1000);
+        end;
+    finally
+        WSACleanup;
+    end;
+end;
+
+{*******************************************************************************
+* portBindable
+* True when 127.0.0.1:aPort can be bound right now (nothing is listening on it).
+*******************************************************************************}
+function portBindable(aPort: Integer): Boolean;
+var
+    s: TSocket;
+    addr: TSockAddrIn;
+begin
+    Result := False;
+    s := socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if s = INVALID_SOCKET then
+        Exit;
+    FillChar(addr, SizeOf(addr), 0);
+    addr.sin_family := AF_INET;
+    addr.sin_port := htons(Word(aPort));
+    addr.sin_addr.S_addr := htonl($7F000001); // 127.0.0.1
+    Result := bind(s, PSockAddr(@addr), SizeOf(addr)) = 0;
+    closesocket(s);
+end;
+
+{*******************************************************************************
+* findFreePort
+*******************************************************************************}
+function findFreePort(aStartPort, aMaxTries: Integer): Integer;
+var
+    port: Integer;
+    tries: Integer;
+    wsa: TWSAData;
+begin
+    Result := aStartPort;
+    if WSAStartup($0202, wsa) <> 0 then
+        Exit;
+    try
+        port := aStartPort;
+        for tries := 0 to aMaxTries - 1 do
+        begin
+            if portBindable(port) then
+                Exit(port);
+            Inc(port);
         end;
     finally
         WSACleanup;
