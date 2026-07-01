@@ -56,21 +56,61 @@ var
     gBarW: Integer = BAR_WIDTH;        // scaled bar width
     gBarH: Integer = BAR_HEIGHT;       // scaled bar height
 
+// Multi-monitor API (missing from this FPC's Windows unit).
+type
+    TMonitorInfo = record
+        cbSize: DWORD;
+        rcMonitor: TRect;
+        rcWork: TRect;
+        dwFlags: DWORD;
+    end;
+
+const
+    MONITOR_DEFAULTTONEAREST = 2;
+
+function MonitorFromWindow(aWnd: HWND; aFlags: DWORD): HMONITOR;
+    stdcall; external 'user32' name 'MonitorFromWindow';
+function GetMonitorInfoW(aMonitor: HMONITOR; aInfo: Pointer): BOOL;
+    stdcall; external 'user32' name 'GetMonitorInfoW';
+
 {*******************************************************************************
 * applyMainGeometry
-* Switches the borderless main window between full screen and a restored size.
-* Restored windows get a sizing border (WS_THICKFRAME) so they can be resized by
-* their edges/corners, and reuse the last restored geometry when one was saved.
+* Switches the borderless main window between full screen and a restored size, on
+* the monitor the window currently sits on (so fullscreen fills that monitor — the
+* one whose bar the user clicked). Restored windows get a sizing border
+* (WS_THICKFRAME) so they can be resized, and reuse the last restored geometry.
 *******************************************************************************}
 procedure applyMainGeometry(aFull: Boolean);
 var
     rw, rh: Integer;
     l, t, r, b: Integer;
+    mL, mT, mW, mH: Integer;
+    mon: HMONITOR;
+    mi: TMonitorInfo;
 begin
+    // Rectangle of the monitor the window is on (fallback: primary).
+    mon := MonitorFromWindow(gMainWnd, MONITOR_DEFAULTTONEAREST);
+    FillChar(mi, SizeOf(mi), 0);
+    mi.cbSize := SizeOf(mi);
+    if GetMonitorInfoW(mon, @mi) then
+    begin
+        mL := mi.rcMonitor.Left;
+        mT := mi.rcMonitor.Top;
+        mW := mi.rcMonitor.Right - mi.rcMonitor.Left;
+        mH := mi.rcMonitor.Bottom - mi.rcMonitor.Top;
+    end
+    else
+    begin
+        mL := 0;
+        mT := 0;
+        mW := gScreenW;
+        mH := gScreenH;
+    end;
+
     if aFull then
     begin
         SetWindowLongW(gMainWnd, GWL_STYLE, Integer(WS_POPUP or WS_VISIBLE));
-        SetWindowPos(gMainWnd, HWND_TOP, 0, 0, gScreenW, gScreenH, SWP_FRAMECHANGED);
+        SetWindowPos(gMainWnd, HWND_TOP, mL, mT, mW, mH, SWP_FRAMECHANGED);
     end
     else
     begin
@@ -79,9 +119,9 @@ begin
             SetWindowPos(gMainWnd, HWND_TOP, l, t, r - l, b - t, SWP_FRAMECHANGED)
         else
         begin
-            rw := (gScreenW * 7) div 10;
-            rh := (gScreenH * 7) div 10;
-            SetWindowPos(gMainWnd, HWND_TOP, (gScreenW - rw) div 2, (gScreenH - rh) div 2,
+            rw := (mW * 7) div 10;
+            rh := (mH * 7) div 10;
+            SetWindowPos(gMainWnd, HWND_TOP, mL + (mW - rw) div 2, mT + (mH - rh) div 2,
                 rw, rh, SWP_FRAMECHANGED);
         end;
     end;
