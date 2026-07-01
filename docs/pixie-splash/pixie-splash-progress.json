@@ -5,7 +5,7 @@
   "title": "Native Pixie/Direct2D loading splash before WebView2 startup",
   "status": "in-progress",
   "createdAt": "2026-07-01",
-  "updatedAt": "2026-07-01",
+  "updatedAt": "2026-07-01T20:00:00Z",
   "decisions": [
     { "id": "PS-D1", "text": "Use Pixie's framework-agnostic D2D core only: Pixie.Canvas, Pixie.Canvas.D2D, Pixie.DrawingCanvas, Pixie.D2DHeaders, Pixie.Types, Pixie.WebColor, Pixie.Borders, Pixie.GradientLayer, Pixie.FontDescription (+ transitive units found in the spike). Exclude all *.VCL.*, *.FMX.*, *.Cairo.*, *ControlBase*, and HTML/SVG/Markdown units unless needed." },
     { "id": "PS-D2", "text": "Splash is a native Win32 frameless top-level window drawn with Pixie D2D (ID2D1DCRenderTarget.BindDC on the window DC), created and shown BEFORE webview_create so it appears instantly, decoupled from WebView2 init." },
@@ -34,23 +34,31 @@
       "id": "PS0.2",
       "phase": 0,
       "title": "Feasibility spike: compile minimal Pixie D2D under plain FPC + render to a frameless window",
-      "status": "todo",
+      "status": "done",
       "dependsOn": ["PS0.1"],
-      "artifacts": ["(temp) spike program", "docs/pixie-splash/pixie-splash-progress.json"],
-      "verify": "the minimal Pixie D2D unit set compiles with AppCore's fpc-x64.cfg (no LCL on the search path); a frameless test window shows Pixie-drawn text via BindDC; the window appears effectively instantly (<< WebView2 init).",
-      "startedAt": null, "finishedAt": null, "blockedReason": null,
-      "evidence": []
+      "artifacts": ["(temp) scratchpad/pixiespike.pas + pixiespike.exe"],
+      "verify": "the minimal Pixie D2D unit set compiles with AppCore's FPC toolchain (no LCL on the search path); a frameless test window shows Pixie-drawn text via BindDC; the window appears effectively instantly (<< WebView2 init).",
+      "startedAt": "2026-07-01", "finishedAt": "2026-07-01", "blockedReason": null,
+      "evidence": [
+        "CONFIRMED. Wrote scratchpad/pixiespike.pas (plain FPC, {$mode delphi}): a WS_POPUP frameless window; TPixieD2DCanvas.Create; on WM_PAINT -> canvas.SetViewSize + canvas.BeginPaint(HDC from Windows.BeginPaint) + TPixieDrawingCanvas.Bind + Brush/FillRect + Font/TextOut ('Loading...') + EndPaint. NO LCL/VCL/FMX units used.",
+        "Compiled with the vendored FPC (KKMindWave/VendorsCore/fpc) -Twin64 -Px86_64 -Mdelphi; 4820 lines, exe produced. Pixie units built: WebColor, Types, Utils, Canvas, Borders, GradientLayer, FontDescription, Encoding, WebP*, Canvas.D2D, D2DHeaders, SvgRenderer*, Html, Matrix, SimpleXml, Utf8, DataUri, ImageUtils, DrawingCanvas.",
+        "Ran pixiespike.exe: exit code 0, stdout 'spike: window loop exited cleanly' (self-closes via a 2.5s timer). So D2D factory + ID2D1DCRenderTarget.BindDC + BeginDraw/DirectWrite text/EndDraw all execute from plain FPC without error.",
+        "Required FPC package search paths (for PS1.1): rtl, rtl-objpas, rtl-generics, rtl-unicode, winunits-base, rtl-extra, fcl-base, fcl-image, paszlib, hash, pasjpeg. Pixie paths: source/common, source/paintbox. (Pixie.Canvas references FPImage + image decoders unconditionally, hence fcl-image/paszlib/hash/pasjpeg — all standard, already in the toolchain.)"
+      ]
     },
     {
       "id": "PS0.3",
       "phase": 0,
       "title": "Approval gate (PS-D6)",
-      "status": "todo",
+      "status": "done",
       "dependsOn": ["PS0.2"],
       "artifacts": ["docs/pixie-splash/pixie-splash-plan.md"],
       "verify": "owner confirms PS-D6 (a) provisioning method, (b) retire-vs-keep HTML splash, (c) splash visuals. PAUSE before PS1.1.",
-      "startedAt": null, "finishedAt": null, "blockedReason": null,
-      "evidence": []
+      "startedAt": "2026-07-01", "finishedAt": "2026-07-01", "blockedReason": null,
+      "evidence": [
+        "Owner locked PS-D6: (a) reuse the existing EchoScript/EchoRecorder/vendors/pixie copy (reference it from fpc-x64.cfg); (c) splash visuals = spinner + step checklist (mirrors the current HTML splash).",
+        "(b) retire-vs-keep HTML splash: not explicitly decided; DEFAULT = native splash replaces the HTML splash pre-ready, keep a minimal fallback if native/D2D init fails. Revisit at PS3.2."
+      ]
     },
     {
       "id": "PS1.1",
