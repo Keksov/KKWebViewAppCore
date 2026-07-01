@@ -24,11 +24,12 @@ uses
 
 const
     BAR_CLASS: PWideChar = 'AppCoreControlBar';
-    BAR_WIDTH = 132;
+    BAR_WIDTH = 176;
     BAR_HEIGHT = 30;
     BTN_WIDTH = 44;
     TIMER_ID = 1;
     TIMER_MS = 30;
+    ID_MOVE = 1000;
     ID_MIN = 1001;
     ID_MAX = 1002;
     ID_CLOSE = 1003;
@@ -45,9 +46,11 @@ var
     gScreenH: Integer = 0;
     gBarWnd: HWND = 0;
     gMainWnd: HWND = 0;
+    gBtnMove: HWND = 0;
     gBtnMin: HWND = 0;
     gBtnMax: HWND = 0;
     gBtnClose: HWND = 0;
+    gMoveOrigProc: LONG_PTR = 0;       // subclassed Move button's original WndProc
 
 {*******************************************************************************
 * applyMainGeometry
@@ -106,7 +109,8 @@ begin
     if not GetCursorPos(pt) then
         Exit;
     h := WindowFromPoint(pt);
-    Result := (h = gBarWnd) or (h = gBtnMin) or (h = gBtnMax) or (h = gBtnClose);
+    Result := (h = gBarWnd) or (h = gBtnMove) or (h = gBtnMin)
+        or (h = gBtnMax) or (h = gBtnClose);
 end;
 
 {*******************************************************************************
@@ -228,6 +232,23 @@ begin
 end;
 
 {*******************************************************************************
+* moveBtnProc
+* Subclass of the Move button: pressing it starts a title-bar-style drag of the
+* main window (via WM_NCLBUTTONDOWN/HTCAPTION), so the window can be dragged around
+* the screen — and across monitors — even in fullscreen mode.
+*******************************************************************************}
+function moveBtnProc(aWnd: HWND; aMsg: UINT; aWParam: WPARAM; aLParam: LPARAM): LRESULT; stdcall;
+begin
+    if aMsg = WM_LBUTTONDOWN then
+    begin
+        ReleaseCapture;
+        SendMessageW(gMainWnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
+        Exit(0);
+    end;
+    Result := CallWindowProcW(TFNWndProc(Pointer(gMoveOrigProc)), aWnd, aMsg, aWParam, aLParam);
+end;
+
+{*******************************************************************************
 * createControlBar
 *******************************************************************************}
 procedure createControlBar(aMainWindow: HWND; aFullScreen: Boolean);
@@ -266,9 +287,13 @@ begin
         DEFAULT_PITCH or FF_DONTCARE, 'Segoe UI Symbol');
     if font = 0 then
         font := GetStockObject(DEFAULT_GUI_FONT);
-    gBtnMin := addButton(UnicodeString(#$2013), ID_MIN, 0, inst, font);            // en dash
-    gBtnMax := addButton(UnicodeString(#$25A1), ID_MAX, BTN_WIDTH, inst, font);    // square
-    gBtnClose := addButton(UnicodeString(#$2715), ID_CLOSE, BTN_WIDTH * 2, inst, font); // cross
+    gBtnMove := addButton(UnicodeString(#$2725), ID_MOVE, 0, inst, font);              // move handle
+    gBtnMin := addButton(UnicodeString(#$2013), ID_MIN, BTN_WIDTH, inst, font);        // en dash
+    gBtnMax := addButton(UnicodeString(#$25A1), ID_MAX, BTN_WIDTH * 2, inst, font);    // square
+    gBtnClose := addButton(UnicodeString(#$2715), ID_CLOSE, BTN_WIDTH * 3, inst, font); // cross
+    // Subclass Move so a mouse-press starts a title-bar-style window drag.
+    if gBtnMove <> 0 then
+        gMoveOrigProc := SetWindowLongPtrW(gBtnMove, GWL_WNDPROC, LONG_PTR(PtrInt(@moveBtnProc)));
 
     // Start faint and visible so the bar can always be found.
     setBarAlpha(ALPHA_IDLE);
