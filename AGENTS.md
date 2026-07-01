@@ -41,10 +41,28 @@ Override: set `FPC_EXE_x64` environment variable.
 MSYS2 MinGW-w64: `c:\bin\msys64\mingw64`
 Override: set `MSYS2_ROOT_OVERRIDE` environment variable.
 
+## Startup splash (native Pixie/Direct2D)
+
+On launch, `AppSplash.pas` shows a native frameless banner **before**
+`webview_create`, so the user gets instant feedback while WebView2's (slow)
+environment init and the services start behind it. It is drawn with Pixie
+(Direct2D/DirectWrite) on its own `BeginThread` with an animation timer: a
+spinner, a bold title and a step checklist that `startServices` fills in via
+`splashSetPhase`. The WebView2 window stays hidden behind the topmost splash
+until the app URL is ready, then is revealed and the splash is closed (no
+blank-white swap). The old in-WebView HTML splash was removed.
+
+Splash language follows the `SplashLang` cfg key (`ru` default / `en`).
+
 ## Config
 
 FPC config: `build\win_x64\fpc-x64.cfg`
 Target: x64, Windows GUI (`-WG`)
+
+The splash pulls in **Pixie**, referenced (not vendored) from the EchoScript
+copy: `..\..\..\..\EchoScript\EchoRecorder\vendors\pixie\source\{common,paintbox}`,
+plus the FPC packages `fcl-image`, `paszlib`, `hash`, `pasjpeg`. These `-Fu`
+paths are already in `fpc-x64.cfg`; no third-party sources are committed here.
 
 ## Linking
 

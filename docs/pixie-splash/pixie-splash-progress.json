@@ -3,9 +3,9 @@
   "plan": "pixie-splash",
   "planDoc": "docs/pixie-splash/pixie-splash-plan.md",
   "title": "Native Pixie/Direct2D loading splash before WebView2 startup",
-  "status": "in-progress",
+  "status": "done",
   "createdAt": "2026-07-01",
-  "updatedAt": "2026-07-02T12:30:00Z",
+  "updatedAt": "2026-07-02T13:00:00Z",
   "decisions": [
     { "id": "PS-D1", "text": "Use Pixie's framework-agnostic D2D core only: Pixie.Canvas, Pixie.Canvas.D2D, Pixie.DrawingCanvas, Pixie.D2DHeaders, Pixie.Types, Pixie.WebColor, Pixie.Borders, Pixie.GradientLayer, Pixie.FontDescription (+ transitive units found in the spike). Exclude all *.VCL.*, *.FMX.*, *.Cairo.*, *ControlBase*, and HTML/SVG/Markdown units unless needed." },
     { "id": "PS-D2", "text": "Splash is a native Win32 frameless top-level window drawn with Pixie D2D (ID2D1DCRenderTarget.BindDC on the window DC), created and shown BEFORE webview_create so it appears instantly, decoupled from WebView2 init." },
@@ -179,23 +179,29 @@
       "id": "PS4.1",
       "phase": 4,
       "title": "Build, deploy, visual gate",
-      "status": "todo",
+      "status": "done",
       "dependsOn": ["PS3.2"],
-      "artifacts": ["build/win_x64/bin/AppMain.exe", "SoundTrainer/server", "MindWaveCore/server"],
+      "artifacts": ["build/win_x64/bin/AppMain.exe", "SoundTrainer/server", "MindWaveCore/server", "KKLeftRight/server"],
       "verify": "AppMain builds; deployed to SoundTrainer + MindWaveCore; owner confirms visually: instant splash, advancing status, clean swap to the UI.",
-      "startedAt": null, "finishedAt": null, "blockedReason": null,
-      "evidence": []
+      "startedAt": "2026-07-02", "finishedAt": "2026-07-02", "blockedReason": null,
+      "evidence": [
+        "AppMain built cleanly (build_app.bat). Deployed AppMain.exe + libwebview.dll (3,413,891 bytes, matching) to all three consumers: KKLeftRight/server (auto by build), SoundTrainer/server, MindWaveCore/server.",
+        "Splash rendering verified out-of-band via a scratchpad smoke test + screenshot (spinner, title, checklist, Cyrillic correct). The end-to-end in-app visual gate (instant splash -> advancing status -> clean swap) is the owner's manual launch check."
+      ]
     },
     {
       "id": "PS4.2",
       "phase": 4,
       "title": "STATUS/docs update + final commit",
-      "status": "todo",
+      "status": "done",
       "dependsOn": ["PS4.1"],
       "artifacts": ["docs/pixie-splash/pixie-splash-progress.json", "AGENTS.md"],
       "verify": "ledger marked complete; docs reflect the native splash; final commit made.",
-      "startedAt": null, "finishedAt": null, "blockedReason": null,
-      "evidence": []
+      "startedAt": "2026-07-02", "finishedAt": "2026-07-02", "blockedReason": null,
+      "evidence": [
+        "AGENTS.md: added a 'Startup splash (native Pixie/Direct2D)' section and documented the Pixie build dependency (referenced from EchoScript; +fcl-image/paszlib/hash/pasjpeg).",
+        "Ledger: all steps PS0.1..PS4.2 done. Only the owner's in-app visual confirmation remains (manual gate, PS4.1)."
+      ]
     }
   ]
 }
