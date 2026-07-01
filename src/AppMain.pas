@@ -6,7 +6,8 @@ program AppMain;
 {$ENDIF}
 
 uses
-    Math, Windows, SysUtils, webview, AppConfig, AppLaunch, AppUpdate, AppBar;
+    Math, Windows, SysUtils, webview, AppConfig, AppLaunch, AppUpdate,
+    AppWindowState, AppBar;
 
 const
     // Shown immediately while services start, so the window never looks frozen.
@@ -324,12 +325,12 @@ begin
         fail('Failed to create WebView2 instance.'#13#10 +
             'Make sure Microsoft Edge WebView2 Runtime is installed.');
     gWebView := w;
+    wnd := HWND(webview_get_window(w));
 
     webview_set_title(w, PAnsiChar(toUtf8('AppCore')));
 
     if useFullScreen then
     begin
-        wnd := HWND(webview_get_window(w));
         SetWindowLongW(wnd, GWL_STYLE, Integer(WS_POPUP or WS_VISIBLE));
         SetWindowPos(wnd, HWND_TOP, 0, 0,
             GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN),
@@ -338,7 +339,12 @@ begin
         createControlBar(wnd, True);
     end
     else
+    begin
         webview_set_size(w, 1024, 768, WebView_Hint_None);
+        // Restore the saved position/size/maximized state and track changes
+        // (windowed mode only).
+        attachWindowState(wnd);
+    end;
 
     webview_bind(w, PAnsiChar(toUtf8('__appcoreExit')), @handleExit, w);
     webview_init(w, PAnsiChar(toUtf8(
@@ -358,6 +364,10 @@ begin
         webview_navigate(w, PAnsiChar(gStartUtf8));
 
     webview_run(w);
+
+    // Persist the last tracked window geometry (windowed mode only).
+    if not useFullScreen then
+        flushWindowState();
 
     // Window closed: stop the dev servers / build process and their console
     // windows before tearing down the webview.
