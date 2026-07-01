@@ -5,7 +5,7 @@
   "title": "Native Pixie/Direct2D loading splash before WebView2 startup",
   "status": "in-progress",
   "createdAt": "2026-07-01",
-  "updatedAt": "2026-07-01T20:00:00Z",
+  "updatedAt": "2026-07-02T10:00:00Z",
   "decisions": [
     { "id": "PS-D1", "text": "Use Pixie's framework-agnostic D2D core only: Pixie.Canvas, Pixie.Canvas.D2D, Pixie.DrawingCanvas, Pixie.D2DHeaders, Pixie.Types, Pixie.WebColor, Pixie.Borders, Pixie.GradientLayer, Pixie.FontDescription (+ transitive units found in the spike). Exclude all *.VCL.*, *.FMX.*, *.Cairo.*, *ControlBase*, and HTML/SVG/Markdown units unless needed." },
     { "id": "PS-D2", "text": "Splash is a native Win32 frameless top-level window drawn with Pixie D2D (ID2D1DCRenderTarget.BindDC on the window DC), created and shown BEFORE webview_create so it appears instantly, decoupled from WebView2 init." },
@@ -63,24 +63,30 @@
     {
       "id": "PS1.1",
       "phase": 1,
-      "title": "Provision Pixie into git-ignored vendors + add source paths to fpc-x64.cfg",
-      "status": "todo",
+      "title": "Add Pixie + package source paths to fpc-x64.cfg (reference EchoScript copy per PS-D6)",
+      "status": "done",
       "dependsOn": ["PS0.3"],
-      "artifacts": ["scripts/provision-pixie (repo)", "build/win_x64/fpc-x64.cfg", ".gitignore"],
-      "verify": "vendors\\pixie present and git-ignored; provision script committed; fpc-x64.cfg has the minimal Pixie source paths; unit set documented in the plan.",
-      "startedAt": null, "finishedAt": null, "blockedReason": null,
-      "evidence": []
+      "artifacts": ["build/win_x64/fpc-x64.cfg"],
+      "verify": "fpc-x64.cfg references the EchoScript Pixie source paths (source/common + source/paintbox) and the required FPC package unit dirs; no third-party sources copied/committed.",
+      "startedAt": "2026-07-02", "finishedAt": "2026-07-02", "blockedReason": null,
+      "evidence": [
+        "Owner overrode PS-D3 at PS0.3: no vendors\\pixie copy / provision script; reference the existing EchoScript/EchoRecorder/vendors/pixie copy directly from fpc-x64.cfg. Provision-script + .gitignore artifacts dropped.",
+        "Added -Fu paths: fcl-image, paszlib, hash, pasjpeg (FPC packages) + ..\\..\\..\\..\\EchoScript\\EchoRecorder\\vendors\\pixie\\source\\{common,paintbox}. All dirs verified present.",
+        "Cyrillic note: Pixie DrawText does WText := UnicodeString(Text) honoring the string's codepage; passing AppMain's UnicodeString phase text round-trips via the system ANSI codepage (1251 on target) => Cyrillic renders. No special encoding needed."
+      ]
     },
     {
       "id": "PS1.2",
       "phase": 1,
       "title": "AppMain still builds with Pixie on the search path",
-      "status": "todo",
+      "status": "done",
       "dependsOn": ["PS1.1"],
       "artifacts": ["build/win_x64/bin/AppMain.exe"],
       "verify": "build_app.bat succeeds with the Pixie paths added; no regression in the current app.",
-      "startedAt": null, "finishedAt": null, "blockedReason": null,
-      "evidence": []
+      "startedAt": "2026-07-02", "finishedAt": "2026-07-02", "blockedReason": null,
+      "evidence": [
+        "build_app.bat: 'Build successful: build\\win_x64\\bin\\AppMain.exe'. Adding the Pixie/package search paths did not disturb the existing AppMain build (Pixie units not yet referenced by any unit)."
+      ]
     },
     {
       "id": "PS2.1",
