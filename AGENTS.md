@@ -80,6 +80,22 @@ connect probe (`AppLaunch.portInUse`): a blocking probe stalled ~2 s per free
 loopback port on machines where a security filter delays the RST, which used to
 push the splash out by ~4 s.
 
+## Branding (per-deployment title + taskbar icon)
+
+So several AppCore apps are distinguishable as taskbar buttons, `AppBranding.pas`
+reads, at startup, files next to the exe:
+
+- `AppCore.ico` — if present, the window icon (small + big via `WM_SETICON`).
+- `AppCore.ini` — UTF-8 `KEY=VALUE`: `AppTitle=<window title>` and, only when
+  `AppCore.ico` is absent, `AppIcon=<base64 of an .ico>`.
+
+It also sets a per-app `AppUserModelID` (from the title) so the taskbar button
+does not group with / borrow the icon of another AppCore instance. Titles may be
+Cyrillic (the ini is UTF-8). Currently deployed placeholders: KKLeftRight = blue
+left/right arrows "Лево-Право", SoundTrainer = teal equalizer "Логопед",
+MindWaveCore = violet sine wave "MindWave" — swap the `.ico` / edit `AppTitle`
+per deployment.
+
 ## Config
 
 FPC config: `build\win_x64\fpc-x64.cfg`

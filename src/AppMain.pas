@@ -7,7 +7,7 @@ program AppMain;
 
 uses
     Math, Windows, SysUtils, webview, AppConfig, AppLaunch, AppUpdate,
-    AppWindowState, AppBar, AppSplash, AppProfile;
+    AppWindowState, AppBar, AppSplash, AppProfile, AppBranding;
 
 const
     // How long the native splash lingers (topmost) after the WebView2 window is
@@ -34,6 +34,9 @@ var
     fullScreenForced: Boolean;
     profileHalt: Boolean;     // --profile-splash: log the startup profile and exit
     profPath: string;
+    brandTitle: string;       // window title from AppCore.ini (AppTitle), or ''
+    brandIconBig: HICON;
+    brandIconSmall: HICON;
 
 function SetProcessDPIAware: BOOL; stdcall; external 'user32' name 'SetProcessDPIAware';
 
@@ -280,6 +283,12 @@ begin
     enablePerMonitorDpi;
     profMark('dpi-aware');
 
+    // Per-deployment title/icon (AppCore.ico / AppCore.ini next to the exe) so the
+    // taskbar buttons are distinguishable. The AppUserModelID must be set before
+    // any window exists, so do this up front.
+    loadBranding(brandTitle, brandIconBig, brandIconSmall);
+    setAppUserModelId(brandTitle);
+
     SetExceptionMask([exInvalidOp, exDenormalized, exZeroDivide,
                       exOverflow, exUnderflow, exPrecision]);
 
@@ -372,7 +381,11 @@ begin
     wnd := HWND(webview_get_window(w));
     gMainWnd := wnd;
 
-    webview_set_title(w, PAnsiChar(toUtf8('AppCore')));
+    if brandTitle <> '' then
+        webview_set_title(w, PAnsiChar(toUtf8(brandTitle)))
+    else
+        webview_set_title(w, PAnsiChar(toUtf8('AppCore')));
+    applyWindowIcons(wnd, brandIconBig, brandIconSmall);
 
     // The webview library shows the window once, at a default size, via a queued
     // set_size (engine_base dispatch_size_default) that runs on the first
