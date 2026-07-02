@@ -54,6 +54,19 @@ blank-white swap). The old in-WebView HTML splash was removed.
 
 Splash language follows the `SplashLang` cfg key (`ru` default / `en`).
 
+### Dev-mode console tabs (Windows 11)
+
+In `Mode=dev` two dev servers are started (backend + quasar). On **Windows 11**
+(build ≥ 22000, detected via `RtlGetVersion` — the registry ProductName still
+says "Windows 10") with **Windows Terminal** (`wt.exe`) present, they open as two
+**tabs of one** terminal window (`wt -w new nt … ; nt …`, each tab a tiny
+generated `%TEMP%\kkdev-<pid>-N.cmd`); otherwise they fall back to a separate
+console window each. Because Windows Terminal hosts the tab shells outside our
+kill-on-close job, the servers' ports are registered and, on exit,
+`terminateProcessGroup` finds each listener (`GetExtendedTcpTable`), walks up to
+its `cmd.exe` tab shell (toolhelp) and kills that tree — closing the tab and
+stopping the server. See `AppLaunch.terminalTabsAvailable` / `launchConsoleTabs`.
+
 ### Startup profiling
 
 `AppProfile.pas` is a zero-overhead-when-disabled high-res profiler. Run with

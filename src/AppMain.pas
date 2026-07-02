@@ -140,26 +140,52 @@ procedure startServices(const aCfg: TAppConfig);
 var
     exitCode: DWORD;
     envPrefix: string;
+    specs: array of TConsoleSpec;
+    k: Integer;
+
+    procedure addSpec(const aDir, aCmd, aTitle: string);
+    begin
+        SetLength(specs, Length(specs) + 1);
+        specs[High(specs)].WorkDir := aDir;
+        specs[High(specs)].Command := aCmd;
+        specs[High(specs)].Title := aTitle;
+        specs[High(specs)].EnvPrefix := envPrefix;
+    end;
+
 begin
     splashSetTitle(tr('Запуск…', 'Starting'));
     if aCfg.Mode = amDev then
     begin
-        envPrefix := Format('set PORT=%d&& ', [aCfg.ServerPort]);
-        if aCfg.ServerDir <> '' then
-        begin
-            splashSetPhase(tr('Запуск сервера', 'Starting backend'));
-            launchInConsole(aCfg.ServerDir,
-                '"' + aCfg.BunExe + '" run dev', 'KK Server (dev)', envPrefix, True);
-        end;
         // PORT lets the quasar proxy target the (possibly relocated) backend;
         // --port moves the quasar dev server itself to the chosen free UI port.
+        envPrefix := Format('set PORT=%d&& ', [aCfg.ServerPort]);
+        SetLength(specs, 0);
+        if aCfg.ServerDir <> '' then
+            addSpec(aCfg.ServerDir, '"' + aCfg.BunExe + '" run dev', 'KK Server (dev)');
         if aCfg.UiDir <> '' then
-        begin
-            splashSetPhase(tr('Запуск интерфейса', 'Starting interface'));
-            launchInConsole(aCfg.UiDir,
+            addSpec(aCfg.UiDir,
                 Format('"%s" run dev -- --port %d', [aCfg.BunExe, aCfg.ReadyPort]),
-                'KK UI (quasar dev)', envPrefix, True);
-        end;
+                'KK UI (quasar dev)');
+
+        if aCfg.ServerDir <> '' then
+            splashSetPhase(tr('Запуск сервера', 'Starting backend'));
+        if aCfg.UiDir <> '' then
+            splashSetPhase(tr('Запуск интерфейса', 'Starting interface'));
+
+        // On Windows 11 with Windows Terminal, open the dev servers as tabs of one
+        // window instead of separate console windows. Windows Terminal owns those
+        // shells (outside our kill-on-close job), so register their ports for the
+        // exit cleanup. Otherwise fall back to a console window per server.
+        if (Length(specs) >= 2) and terminalTabsAvailable() then
+        begin
+            launchConsoleTabs(specs);
+            registerCleanupPort(aCfg.ServerPort);
+            registerCleanupPort(aCfg.ReadyPort);
+        end
+        else
+            for k := Low(specs) to High(specs) do
+                launchInConsole(specs[k].WorkDir, specs[k].Command,
+                    specs[k].Title, specs[k].EnvPrefix, True);
     end
     else
     begin

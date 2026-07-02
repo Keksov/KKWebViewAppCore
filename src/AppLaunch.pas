@@ -9,6 +9,15 @@ interface
 uses
     Windows, SysUtils;
 
+type
+    { One console to open (used by launchConsoleTabs). }
+    TConsoleSpec = record
+        WorkDir: string;
+        Command: string;
+        Title: string;
+        EnvPrefix: string;
+    end;
+
 { Launches aCommand in a brand new console window with aWorkDir as the working
   directory. When aKeepOpen is True the console stays open after the command
   exits (cmd.exe /k) so dev-server logs/errors remain visible; otherwise it
@@ -18,6 +27,20 @@ uses
   the whole tree down. Does not wait for the process. }
 function launchInConsole(const aWorkDir, aCommand, aTitle, aEnvPrefix: string;
     aKeepOpen: Boolean): Boolean;
+
+{ True on Windows 11 (build >= 22000) with Windows Terminal (wt.exe) present, i.e.
+  when launchConsoleTabs can open the consoles as tabs of a single window. }
+function terminalTabsAvailable(): Boolean;
+
+{ Opens each spec as a tab in ONE new Windows Terminal window (cmd /k, so the tab
+  stays open for logs). Because Windows Terminal hosts the shells under its own
+  process (out of our kill-on-close job), the caller must registerCleanupPort for
+  the ports the tab servers listen on, so terminateProcessGroup can stop them. }
+function launchConsoleTabs(const aSpecs: array of TConsoleSpec): Boolean;
+
+{ Records a TCP port whose listener (and its owning terminal tab) should be killed
+  by terminateProcessGroup. Used for tab-hosted dev servers the job cannot reach. }
+procedure registerCleanupPort(aPort: Integer);
 
 { Runs aCommand in a new console, waits for it to finish, returns its exit code. }
 function runAndWait(const aWorkDir, aCommand, aTitle: string; out aExitCode: DWORD): Boolean;
@@ -86,8 +109,41 @@ function AssignProcessToJobObject(aJob, aProcess: HANDLE): BOOL;
 function TerminateJobObject(aJob: HANDLE; aExitCode: UINT): BOOL;
     stdcall; external 'kernel32' name 'TerminateJobObject';
 
+const
+    TCP_TABLE_OWNER_PID_LISTENER = 3;
+
+type
+    { RtlGetVersion reports the true OS version regardless of the exe manifest
+      (unlike GetVersionEx / the CurrentVersion ProductName string). }
+    TRtlOsVersionInfoW = record
+        dwOSVersionInfoSize: DWORD;
+        dwMajorVersion: DWORD;
+        dwMinorVersion: DWORD;
+        dwBuildNumber: DWORD;
+        dwPlatformId: DWORD;
+        szCSDVersion: array[0..127] of WideChar;
+    end;
+
+    TMibTcpRowOwnerPid = record
+        dwState: DWORD;
+        dwLocalAddr: DWORD;
+        dwLocalPort: DWORD;
+        dwRemoteAddr: DWORD;
+        dwRemotePort: DWORD;
+        dwOwningPid: DWORD;
+    end;
+    PMibTcpRowOwnerPid = ^TMibTcpRowOwnerPid;
+
+function RtlGetVersion(var aInfo: TRtlOsVersionInfoW): LongInt; stdcall;
+    external 'ntdll' name 'RtlGetVersion';
+function GetExtendedTcpTable(aTable: Pointer; var aSize: DWORD; aOrder: BOOL;
+    aAf: ULONG; aClass: DWORD; aReserved: ULONG): DWORD; stdcall;
+    external 'iphlpapi' name 'GetExtendedTcpTable';
+
 var
     gJob: HANDLE = 0;
+    gCleanupPorts: array of Integer;
+    gTempBatches: array of string;   // per-tab .cmd files to delete on exit
 
 {*******************************************************************************
 * ensureJob
@@ -200,16 +256,302 @@ begin
 end;
 
 {*******************************************************************************
+* terminalTabsAvailable
+* True on Windows 11 (build >= 22000) with Windows Terminal (wt.exe) present.
+*******************************************************************************}
+function wtPath(): string;
+begin
+    Result := '';
+    Result := GetEnvironmentVariable('LOCALAPPDATA');
+    if Result = '' then
+        Exit;
+    Result := IncludeTrailingPathDelimiter(Result) + 'Microsoft\WindowsApps\wt.exe';
+    if not FileExists(Result) then
+        Result := '';
+end;
+
+function terminalTabsAvailable(): Boolean;
+var
+    vi: TRtlOsVersionInfoW;
+    win11: Boolean;
+begin
+    FillChar(vi, SizeOf(vi), 0);
+    vi.dwOSVersionInfoSize := SizeOf(vi);
+    win11 := (RtlGetVersion(vi) = 0)
+        and ((vi.dwMajorVersion > 10)
+             or ((vi.dwMajorVersion = 10) and (vi.dwBuildNumber >= 22000)));
+    Result := win11 and (wtPath() <> '');
+end;
+
+{*******************************************************************************
+* launchConsoleTabs
+* Writes a small .cmd per console (title + cd + env + command, so there is no
+* quote nesting to fight through wt/cmd) and opens them as tabs of ONE new
+* Windows Terminal window in a single `wt -w new nt ... ; nt ...` invocation.
+*******************************************************************************}
+function launchConsoleTabs(const aSpecs: array of TConsoleSpec): Boolean;
+var
+    wt, cl, batch: string;
+    i, pid: Integer;
+    f: TextFile;
+    si: STARTUPINFOW;
+    pi: PROCESS_INFORMATION;
+    clW: UnicodeString;
+    cmdBuf: array of WideChar;
+begin
+    Result := False;
+    wt := wtPath();
+    if (wt = '') or (Length(aSpecs) = 0) then
+        Exit;
+    pid := GetCurrentProcessId;
+    cl := '"' + wt + '" -w new';
+    for i := Low(aSpecs) to High(aSpecs) do
+    begin
+        batch := IncludeTrailingPathDelimiter(GetTempDir)
+            + Format('kkdev-%d-%d.cmd', [pid, i]);
+        AssignFile(f, batch);
+        try
+            Rewrite(f);
+            WriteLn(f, '@echo off');
+            WriteLn(f, 'title ' + aSpecs[i].Title);
+            if aSpecs[i].WorkDir <> '' then
+                WriteLn(f, 'cd /d "' + aSpecs[i].WorkDir + '"');
+            WriteLn(f, aSpecs[i].EnvPrefix + aSpecs[i].Command);
+            CloseFile(f);
+        except
+            Exit;
+        end;
+        SetLength(gTempBatches, Length(gTempBatches) + 1);
+        gTempBatches[High(gTempBatches)] := batch;
+        if i > Low(aSpecs) then
+            cl := cl + ' ;';
+        cl := cl + ' nt --title "' + aSpecs[i].Title + '" cmd /k "' + batch + '"';
+    end;
+
+    clW := UnicodeString(cl);
+    SetLength(cmdBuf, Length(clW) + 1);
+    if Length(clW) > 0 then
+        Move(PWideChar(clW)^, cmdBuf[0], Length(clW) * SizeOf(WideChar));
+    cmdBuf[Length(clW)] := #0;
+
+    FillChar(si, SizeOf(si), 0);
+    si.cb := SizeOf(si);
+    FillChar(pi, SizeOf(pi), 0);
+    // wt.exe forwards to Windows Terminal and exits immediately; no console of its own.
+    if CreateProcessW(nil, @cmdBuf[0], nil, nil, False, CREATE_NO_WINDOW,
+        nil, nil, @si, @pi) then
+    begin
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        Result := True;
+    end;
+end;
+
+{*******************************************************************************
+* registerCleanupPort
+*******************************************************************************}
+procedure registerCleanupPort(aPort: Integer);
+begin
+    SetLength(gCleanupPorts, Length(gCleanupPorts) + 1);
+    gCleanupPorts[High(gCleanupPorts)] := aPort;
+end;
+
+{*******************************************************************************
+* portOwnerPid — PID of the process LISTENING on 127.0.0.1/0.0.0.0:aPort, or 0.
+*******************************************************************************}
+function portOwnerPid(aPort: Integer): DWORD;
+var
+    size: DWORD;
+    buf: PByte;
+    p: PByte;
+    n, i: DWORD;
+    row: PMibTcpRowOwnerPid;
+    localPort: Word;
+begin
+    Result := 0;
+    size := 0;
+    GetExtendedTcpTable(nil, size, False, AF_INET, TCP_TABLE_OWNER_PID_LISTENER, 0);
+    if size = 0 then
+        Exit;
+    GetMem(buf, size);
+    try
+        if GetExtendedTcpTable(buf, size, False, AF_INET, TCP_TABLE_OWNER_PID_LISTENER, 0) <> 0 then
+            Exit;
+        n := PDWORD(buf)^;
+        p := buf + SizeOf(DWORD);
+        for i := 0 to n - 1 do
+        begin
+            row := PMibTcpRowOwnerPid(p);
+            localPort := ((row^.dwLocalPort and $FF) shl 8) or ((row^.dwLocalPort shr 8) and $FF);
+            if localPort = Word(aPort) then
+            begin
+                Result := row^.dwOwningPid;
+                Exit;
+            end;
+            Inc(p, SizeOf(TMibTcpRowOwnerPid));
+        end;
+    finally
+        FreeMem(buf);
+    end;
+end;
+
+{*******************************************************************************
+* procParent — parent PID of aPid; aName returns the parent's exe file name.
+*******************************************************************************}
+function procParent(aPid: DWORD; out aName: string): DWORD;
+var
+    snap: HANDLE;
+    pe: PROCESSENTRY32;
+begin
+    Result := 0;
+    aName := '';
+    snap := CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if snap = INVALID_HANDLE_VALUE then
+        Exit;
+    try
+        pe.dwSize := SizeOf(pe);
+        if Process32First(snap, pe) then
+            repeat
+                if pe.th32ProcessID = aPid then
+                begin
+                    Result := pe.th32ParentProcessID;
+                    Break;
+                end;
+            until not Process32Next(snap, pe);
+        if Result = 0 then
+            Exit;
+        pe.dwSize := SizeOf(pe);
+        if Process32First(snap, pe) then
+            repeat
+                if pe.th32ProcessID = Result then
+                begin
+                    aName := StrPas(pe.szExeFile);
+                    Break;
+                end;
+            until not Process32Next(snap, pe);
+    finally
+        CloseHandle(snap);
+    end;
+end;
+
+{*******************************************************************************
+* killTree — terminates aRoot and all its descendant processes.
+*******************************************************************************}
+procedure killTree(aRoot: DWORD);
+var
+    snap: HANDLE;
+    pe: PROCESSENTRY32;
+    pids, ppids: array of DWORD;
+    cnt: Integer;
+
+    procedure killRec(aPid: DWORD);
+    var
+        j: Integer;
+        h: HANDLE;
+    begin
+        for j := 0 to cnt - 1 do
+            if (ppids[j] = aPid) and (pids[j] <> aPid) then
+                killRec(pids[j]);
+        h := OpenProcess(PROCESS_TERMINATE, False, aPid);
+        if h <> 0 then
+        begin
+            TerminateProcess(h, 0);
+            CloseHandle(h);
+        end;
+    end;
+
+begin
+    if aRoot = 0 then
+        Exit;
+    snap := CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if snap = INVALID_HANDLE_VALUE then
+        Exit;
+    cnt := 0;
+    pe.dwSize := SizeOf(pe);
+    if Process32First(snap, pe) then
+        repeat
+            SetLength(pids, cnt + 1);
+            SetLength(ppids, cnt + 1);
+            pids[cnt] := pe.th32ProcessID;
+            ppids[cnt] := pe.th32ParentProcessID;
+            Inc(cnt);
+        until not Process32Next(snap, pe);
+    CloseHandle(snap);
+    killRec(aRoot);
+end;
+
+{*******************************************************************************
+* shellAncestor — walks up from aPid to the nearest cmd.exe ancestor (the tab's
+* shell), or 0 if none within a few levels. The port listener is typically a
+* child of bun, which is a child of the tab's cmd.exe, so we must climb past bun.
+*******************************************************************************}
+function shellAncestor(aPid: DWORD): DWORD;
+var
+    cur, par: DWORD;
+    nm: string;
+    depth: Integer;
+begin
+    Result := 0;
+    cur := aPid;
+    for depth := 0 to 5 do
+    begin
+        par := procParent(cur, nm);
+        if par = 0 then
+            Break;
+        if SameText(nm, 'cmd.exe') then
+        begin
+            Result := par;
+            Exit;
+        end;
+        cur := par;
+    end;
+end;
+
+{*******************************************************************************
+* killRegisteredPorts — stops tab-hosted dev servers the job cannot reach: for
+* each registered port, kill the tab's cmd.exe tree (which closes the terminal
+* tab AND stops bun + its dev server); if no cmd ancestor is found, kill the
+* listener's own tree.
+*******************************************************************************}
+procedure killRegisteredPorts();
+var
+    i: Integer;
+    pid, shell: DWORD;
+begin
+    for i := 0 to High(gCleanupPorts) do
+    begin
+        pid := portOwnerPid(gCleanupPorts[i]);
+        if pid = 0 then
+            Continue;
+        shell := shellAncestor(pid);
+        if shell <> 0 then
+            killTree(shell)
+        else
+            killTree(pid);
+    end;
+    SetLength(gCleanupPorts, 0);
+end;
+
+{*******************************************************************************
 * terminateProcessGroup
 *******************************************************************************}
 procedure terminateProcessGroup;
+var
+    i: Integer;
 begin
+    // Tab-hosted dev servers (Windows Terminal owns them, outside our job).
+    killRegisteredPorts();
+    // Separate-window consoles and their children (the fallback path).
     if gJob <> 0 then
     begin
         TerminateJobObject(gJob, 0);
         CloseHandle(gJob);
         gJob := 0;
     end;
+    // Remove the per-tab .cmd helpers we wrote to TEMP.
+    for i := 0 to High(gTempBatches) do
+        DeleteFileW(PWideChar(UnicodeString(gTempBatches[i])));
+    SetLength(gTempBatches, 0);
 end;
 
 {*******************************************************************************
