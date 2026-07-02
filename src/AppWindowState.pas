@@ -20,7 +20,11 @@ uses
   Windowed: attachWindowState restores the geometry and tracks changes (subclassing
   the window so state is captured even on X-button close / hard kill); flushWindowState
   writes on shutdown. Kiosk: saveKioskFull / loadKioskFull persist the AppBar toggle. }
+{ Restores the saved windowed geometry WITHOUT showing the window (it is revealed
+  later) and starts tracking changes. restoredShowCmd returns how it should be
+  shown once ready: SW_SHOWMAXIMIZED if it was saved maximized, else SW_SHOWNORMAL. }
 procedure attachWindowState(aWnd: HWND);
+function restoredShowCmd(): Integer;
 procedure flushWindowState();
 procedure saveKioskFull(aFull: Boolean);
 function loadKioskFull(out aFull: Boolean): Boolean;
@@ -38,8 +42,9 @@ const
     STATE_NAME = 'AppCore.window';
 
 var
-    gOrigProc: LONG_PTR = 0;   // subclassed window's original WndProc
-    gLastGeom: string = '';    // latest "left top right bottom showCmd"
+    gOrigProc: LONG_PTR = 0;              // subclassed window's original WndProc
+    gLastGeom: string = '';               // latest "left top right bottom showCmd"
+    gShowCmd: Integer = SW_SHOWNORMAL;     // how to show once ready (normal/maximized)
 
 {*******************************************************************************
 * exePathKey — FNV-1a hash (hex) of the lowercased full exe path; the per-install
@@ -291,10 +296,14 @@ begin
     FillChar(wp, SizeOf(wp), 0);
     wp.length := SizeOf(wp);
     wp.rcNormalPosition := r;
+    // Position the window but keep it HIDDEN — it is revealed later, in one step,
+    // at the correct place/state (no empty-window flash during startup). The
+    // intended show state is remembered for restoredShowCmd.
     if showCmd = SW_SHOWMAXIMIZED then
-        wp.showCmd := SW_SHOWMAXIMIZED
+        gShowCmd := SW_SHOWMAXIMIZED
     else
-        wp.showCmd := SW_SHOWNORMAL;
+        gShowCmd := SW_SHOWNORMAL;
+    wp.showCmd := SW_HIDE;
     SetWindowPlacement(aWnd, @wp);
 end;
 
@@ -339,6 +348,15 @@ begin
     restoreWindowState(aWnd);
     gLastGeom := placementString(aWnd);
     gOrigProc := SetWindowLongPtrW(aWnd, GWL_WNDPROC, LONG_PTR(PtrInt(@stateWndProc)));
+end;
+
+{*******************************************************************************
+* restoredShowCmd — how the window should be shown once ready (SW_SHOWNORMAL, or
+* SW_SHOWMAXIMIZED when it was saved maximized).
+*******************************************************************************}
+function restoredShowCmd(): Integer;
+begin
+    Result := gShowCmd;
 end;
 
 {*******************************************************************************

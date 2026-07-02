@@ -188,19 +188,35 @@ begin
 end;
 
 {*******************************************************************************
+* showMainWindow
+* Reveals the (until-now hidden) WebView2 window in one step, at the right
+* place/size/state — so it never flashes empty during startup. In full-screen it
+* also creates the control bar; in windowed mode it honours the restored
+* normal/maximized state.
+*******************************************************************************}
+procedure showMainWindow();
+begin
+    if gUseFullScreen then
+    begin
+        ShowWindow(gMainWnd, SW_SHOW);
+        createControlBar(gMainWnd, True);
+    end
+    else
+        ShowWindow(gMainWnd, restoredShowCmd);
+    SetForegroundWindow(gMainWnd);
+end;
+
+{*******************************************************************************
 * revealWhenReady
 * Runs on the GUI thread (via webview_dispatch) once services are up: shows the
-* (until-now hidden) WebView2 window behind the still-topmost splash, adds the
-* control bar in full-screen mode, then navigates to the real application URL.
-* The worker then lingers briefly so the page paints before the splash is closed.
+* WebView2 window behind the still-topmost splash and navigates to the real app
+* URL. The worker then lingers briefly so the page paints before the splash is
+* closed.
 *******************************************************************************}
 procedure revealWhenReady(aWebView: PWebView; aArg: Pointer); cdecl;
 begin
-    ShowWindow(gMainWnd, SW_SHOW);
-    if gUseFullScreen then
-        createControlBar(gMainWnd, True);
+    showMainWindow();
     webview_navigate(aWebView, PAnsiChar(gStartUtf8));
-    SetForegroundWindow(gMainWnd);
 end;
 
 {*******************************************************************************
@@ -328,30 +344,31 @@ begin
     wnd := HWND(webview_get_window(w));
     gMainWnd := wnd;
 
-    // Keep the WebView2 window hidden behind the splash until the app is ready,
-    // so the swap shows a painted UI instead of a blank frame.
-    if useServices then
-        ShowWindow(wnd, SW_HIDE);
-
     webview_set_title(w, PAnsiChar(toUtf8('AppCore')));
 
+    // Configure the window while it stays HIDDEN. The webview library creates it
+    // hidden (WS_OVERLAPPEDWINDOW, no WS_VISIBLE) and only shows it via
+    // webview_set_size; we avoid that path so nothing reveals the window early.
+    // It is shown once — at the right place/size/state — by showMainWindow, so no
+    // empty window ever flashes on screen.
     if useFullScreen then
     begin
-        SetWindowLongW(wnd, GWL_STYLE, Integer(WS_POPUP or WS_VISIBLE));
+        // Borderless fullscreen; NO WS_VISIBLE here (that + SWP_FRAMECHANGED would
+        // realise the window). Sized now, shown later.
+        SetWindowLongW(wnd, GWL_STYLE, Integer(WS_POPUP));
         SetWindowPos(wnd, HWND_TOP, 0, 0,
             GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN),
-            SWP_FRAMECHANGED or SWP_NOACTIVATE);
-        // Borderless window has no system buttons; add an RDP-style floating bar.
-        // With services this is deferred to revealWhenReady so it does not show
-        // over the splash; without services the window is up now.
-        if not useServices then
-            createControlBar(wnd, True);
+            SWP_FRAMECHANGED or SWP_NOACTIVATE or SWP_NOZORDER);
     end
     else
     begin
-        webview_set_size(w, 1024, 768, WebView_Hint_None);
-        // Restore the saved position/size/maximized state and track changes
-        // (windowed mode only).
+        // Default 1024x768 centred (WM_SIZE lays out WebView2); attachWindowState
+        // then overrides with the saved geometry. Both keep the window hidden and
+        // record how to show it (normal/maximized) for showMainWindow.
+        SetWindowPos(wnd, 0,
+            (GetSystemMetrics(SM_CXSCREEN) - 1024) div 2,
+            (GetSystemMetrics(SM_CYSCREEN) - 768) div 2,
+            1024, 768, SWP_NOZORDER or SWP_NOACTIVATE);
         attachWindowState(wnd);
     end;
 
@@ -363,11 +380,14 @@ begin
 
     // With services, a worker thread starts the servers, pushes status to the
     // native splash, then reveals the WebView2 window and closes the splash.
-    // Without services, open the URL right away.
+    // Without services, open the URL and show the window right away.
     if useServices then
         BeginThread(@startupThread, nil)
     else
+    begin
+        showMainWindow();
         webview_navigate(w, PAnsiChar(gStartUtf8));
+    end;
 
     profMark('run-loop-enter');
     if profEnabled then
