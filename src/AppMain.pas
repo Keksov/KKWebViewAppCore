@@ -198,8 +198,10 @@ procedure showMainWindow();
 begin
     if gUseFullScreen then
     begin
-        ShowWindow(gMainWnd, SW_SHOW);
+        // createControlBar positions the (still hidden) window on the saved kiosk
+        // monitor first; then show it there directly — no primary-monitor flash.
         createControlBar(gMainWnd, True);
+        ShowWindow(gMainWnd, SW_SHOW);
     end
     else
         ShowWindow(gMainWnd, restoredShowCmd);
@@ -346,11 +348,20 @@ begin
 
     webview_set_title(w, PAnsiChar(toUtf8('AppCore')));
 
-    // Configure the window while it stays HIDDEN. The webview library creates it
-    // hidden (WS_OVERLAPPEDWINDOW, no WS_VISIBLE) and only shows it via
-    // webview_set_size; we avoid that path so nothing reveals the window early.
-    // It is shown once — at the right place/size/state — by showMainWindow, so no
-    // empty window ever flashes on screen.
+    // The webview library shows the window once, at a default size, via a queued
+    // set_size (engine_base dispatch_size_default) that runs on the first
+    // webview_run iteration unless a size was already set — and set_size keeps the
+    // window's position (SWP_NOMOVE), so it would pop up empty at wherever we
+    // placed it. Neutralise it: park the window FAR off-screen, let that default
+    // size apply there, and set the size ourselves (claims the slot so the queued
+    // default is skipped); then hide it again. From here the window is only ever
+    // shown — on-screen, at the right place/size — by showMainWindow.
+    SetWindowPos(wnd, 0, -32000, -32000, 800, 600, SWP_NOZORDER or SWP_NOACTIVATE);
+    webview_set_size(w, 800, 600, WebView_Hint_None);
+    ShowWindow(wnd, SW_HIDE);
+
+    // Configure the window while it stays HIDDEN. It is shown once — at the right
+    // place/size/state — by showMainWindow, so no empty window flashes on screen.
     if useFullScreen then
     begin
         // Borderless fullscreen; NO WS_VISIBLE here (that + SWP_FRAMECHANGED would

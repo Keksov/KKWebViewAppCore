@@ -480,9 +480,10 @@ begin
     if gBtnMove <> 0 then
         gMoveOrigProc := SetWindowLongPtrW(gBtnMove, GWL_WNDPROC, LONG_PTR(PtrInt(@moveBtnProc)));
 
-    // Start faint and visible so the bar can always be found.
+    // Start faint; leave it HIDDEN — the first updateBar (timer) shows it already
+    // positioned over the main window, so it never flashes at (0,0) before the
+    // main window is placed on its monitor.
     setBarAlpha(ALPHA_IDLE);
-    ShowWindow(gBarWnd, SW_SHOWNOACTIVATE);
     SetTimer(gBarWnd, TIMER_ID, TIMER_MS, nil);
 
     // Apply the saved (or default) fullscreen/restored state once the message loop
@@ -511,6 +512,10 @@ begin
     end;
     gUsePreferredMon := True;
     gAssertTicks := 34;
+    // Apply the resolved geometry synchronously so a caller can position the (still
+    // hidden) window on the correct monitor BEFORE showing it — no flash on the
+    // primary monitor. The timer above re-asserts it for ~1s as a safety net.
+    applyMainGeometry(gFull);
 end;
 
 end.

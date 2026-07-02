@@ -5,7 +5,7 @@
   "title": "Native Pixie/Direct2D loading splash before WebView2 startup",
   "status": "done",
   "createdAt": "2026-07-01",
-  "updatedAt": "2026-07-02T15:30:00Z",
+  "updatedAt": "2026-07-02T17:00:00Z",
   "decisions": [
     {
       "id": "PS-D1",
@@ -367,6 +367,29 @@
         "Root cause: the WebView2 window (created hidden by the library) was revealed early by our own setup -- fullscreen used SetWindowLong(GWL_STYLE, WS_POPUP or WS_VISIBLE) which + SetWindowPos(SWP_FRAMECHANGED) realised the window; windowed used webview_set_size (calls window_show -> ShowWindow) and attachWindowState/SetWindowPlacement (SW_SHOWNORMAL/MAXIMIZED). All showed an empty window before content/reveal.",
         "Fix: configure the window while hidden. Fullscreen: WS_POPUP only (no WS_VISIBLE); size via SetWindowPos without show. Windowed: size via our own SetWindowPos (not webview_set_size), and restoreWindowState now positions with SW_HIDE and records the intended show state (restoredShowCmd). New showMainWindow() reveals it once (ShowWindow SW_SHOW + control bar for fullscreen; SW_SHOWNORMAL/MAXIMIZED for windowed) from revealWhenReady / the no-services path.",
         "Verified deterministically: polled the 'webview'-class window's IsWindowVisible every 60ms after launch -> hidden until ~1090ms, then VISIBLE exactly once at ~1174ms (reveal), staying visible. No hidden->visible->hidden toggle => no flash."
+      ]
+    },
+    {
+      "id": "PS5.4",
+      "phase": 5,
+      "title": "Really eliminate the empty-window flash (webview auto-show + reveal placement)",
+      "status": "done",
+      "dependsOn": [
+        "PS5.3"
+      ],
+      "artifacts": [
+        "src/AppMain.pas",
+        "src/AppBar.pas"
+      ],
+      "verify": "during startup only the splash is on-screen; the webview appears once, directly at its final monitor/geometry; no control-bar flicker.",
+      "startedAt": "2026-07-02",
+      "finishedAt": "2026-07-02",
+      "blockedReason": null,
+      "evidence": [
+        "Diagnosed with a per-window IsWindowVisible+rect poll: the real cause was the webview library itself -- engine_base dispatch_size_default queues a default set_size (-> window_show) that runs on the first webview_run iteration; set_size uses SWP_NOMOVE, so it resized to ~653x493 AT our (0,0) position and showed the window -> empty white window at top-left for ~3s.",
+        "Fix 1 (AppMain): right after webview_create, park the window far off-screen and call webview_set_size(800,600) there -- this claims the size slot (m_is_size_set) so the queued default is skipped, and the one auto-show happens off-screen; then ShowWindow(SW_HIDE). Now only showMainWindow ever reveals it.",
+        "Fix 2 (reveal placement): createControlBar now applies applyMainGeometry synchronously so the hidden window is positioned on the saved kiosk monitor BEFORE showMainWindow shows it (no transient on the primary monitor); the control bar starts hidden and is shown already-positioned by the first updateBar (no (0,0) flicker).",
+        "Verified (MindWaveCore, fullscreen kiosk on monitor 2): during load only the splash is on-screen; webview first appears at 1928x1148 @(3070,5) and the bar at 176x30 @(3946,5) -- both directly on monitor 2, no early/primary flash."
       ]
     }
   ]
