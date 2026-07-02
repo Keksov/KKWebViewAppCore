@@ -29,6 +29,7 @@ var
     gStartUtf8: UTF8String;   // resolved target URL (UTF-8), opened once ready
     gMainWnd: HWND;           // WebView2 window, kept hidden until ready
     gUseFullScreen: Boolean;  // shared with the reveal callback
+    gDevMode: Boolean;        // dev config: enables DevTools + the bar button
     useServices: Boolean;
     useFullScreen: Boolean;
     fullScreenForced: Boolean;
@@ -217,6 +218,53 @@ begin
 end;
 
 {*******************************************************************************
+* openDevTools
+* Opens the browser dev-tools in a separate window. Reaches the WebView2 through
+* the native browser-controller handle and calls, by COM vtable slot,
+* ICoreWebView2Controller.get_CoreWebView2 (slot 25) then
+* ICoreWebView2.OpenDevToolsWindow (slot 51) — indices taken from WebView2.h; the
+* returned CoreWebView2 reference is Released (IUnknown slot 2). Requires the
+* webview to have been created with DevTools enabled (dev mode).
+*******************************************************************************}
+type
+    TComVtbl = array[0..255] of Pointer;
+    PComVtbl = ^TComVtbl;
+    TComGetCore = function(aSelf: Pointer; out aCore: Pointer): HResult; stdcall;
+    TComNoArg = function(aSelf: Pointer): HResult; stdcall;
+
+function comSlot(aObj: Pointer; aIndex: Integer): Pointer;
+begin
+    Result := PComVtbl(PPointer(aObj)^)^[aIndex];
+end;
+
+procedure openDevTools();
+const
+    IDX_GET_COREWEBVIEW2 = 25;   // ICoreWebView2Controller vtable slot
+    IDX_OPENDEVTOOLS     = 51;   // ICoreWebView2 vtable slot
+var
+    ctrl, core: Pointer;
+    getCore: TComGetCore;
+    callNoArg: TComNoArg;
+begin
+    if gWebView = nil then
+        Exit;
+    ctrl := webview_get_native_handle(gWebView, Browser_Controller);
+    if ctrl = nil then
+        Exit;
+    getCore := TComGetCore(comSlot(ctrl, IDX_GET_COREWEBVIEW2));
+    core := nil;
+    if (getCore(ctrl, core) <> S_OK) or (core = nil) then
+        Exit;
+    try
+        callNoArg := TComNoArg(comSlot(core, IDX_OPENDEVTOOLS));
+        callNoArg(core);
+    finally
+        callNoArg := TComNoArg(comSlot(core, 2)); // IUnknown.Release
+        callNoArg(core);
+    end;
+end;
+
+{*******************************************************************************
 * showMainWindow
 * Reveals the (until-now hidden) WebView2 window in one step, at the right
 * place/size/state — so it never flashes empty during startup. In full-screen it
@@ -229,7 +277,7 @@ begin
     begin
         // createControlBar positions the (still hidden) window on the saved kiosk
         // monitor first; then show it there directly — no primary-monitor flash.
-        createControlBar(gMainWnd, True);
+        createControlBar(gMainWnd, True, gDevMode, @openDevTools);
         ShowWindow(gMainWnd, SW_SHOW);
     end
     else
@@ -333,6 +381,7 @@ begin
             Halt(0);
         profMark('autoupdate-checked');
         gConfig := cfg;                    // SplashLang for the splash title / tr()
+        gDevMode := cfg.Mode = amDev;      // enables DevTools + the bar button
         if not fullScreenForced then
             useFullScreen := cfg.FullScreen;
     end;
@@ -369,7 +418,11 @@ begin
 
     gStartUtf8 := toUtf8(startUrl);
 
-    w := webview_create(WebView_NoDevTools, nil);
+    // Enable DevTools (F12 + the bar button) in dev mode only.
+    if gDevMode then
+        w := webview_create(WebView_DevTools, nil)
+    else
+        w := webview_create(WebView_NoDevTools, nil);
     profMark('webview-created');
     if w = nil then
     begin

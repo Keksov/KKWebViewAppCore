@@ -67,6 +67,14 @@ kill-on-close job, the servers' ports are registered and, on exit,
 its `cmd.exe` tab shell (toolhelp) and kills that tree — closing the tab and
 stopping the server. See `AppLaunch.terminalTabsAvailable` / `launchConsoleTabs`.
 
+Dev mode also creates the WebView2 with DevTools enabled (so **F12** works) and
+adds a `</>` button to the full-screen control bar that opens the browser
+dev-tools in a **separate window**. `AppMain.openDevTools` reaches the WebView2
+via `webview_get_native_handle(Browser_Controller)` and calls, by COM vtable
+slot, `ICoreWebView2Controller.get_CoreWebView2` (25) then
+`ICoreWebView2.OpenDevToolsWindow` (51) — slots taken from the bundled
+`WebView2.h`; no change to the C++ webview library.
+
 ### Startup profiling
 
 `AppProfile.pas` is a zero-overhead-when-disabled high-res profiler. Run with

@@ -9,13 +9,19 @@ interface
 uses
     Windows, Math;
 
+type
+    { Invoked (on the GUI thread) when the dev-tools bar button is clicked. }
+    TDevToolsProc = procedure();
+
 { Creates an RDP-style floating control bar pinned to the top-center of the main
   window with minimize / restore-fullscreen / close buttons. The bar stays
   visible but faint and fades to fully opaque while the cursor is over it, so it
   can always be located. Must be called on the GUI thread before the webview
   message loop starts; that loop pumps the bar's messages. aFullScreen tells the
-  bar the window's initial state. }
-procedure createControlBar(aMainWindow: HWND; aFullScreen: Boolean);
+  bar the window's initial state. When aDevTools is True an extra button is shown
+  (dev mode) that calls aDevProc to open the browser dev-tools window. }
+procedure createControlBar(aMainWindow: HWND; aFullScreen: Boolean;
+    aDevTools: Boolean = False; aDevProc: TDevToolsProc = nil);
 
 implementation
 
@@ -33,6 +39,7 @@ const
     ID_MIN = 1001;
     ID_MAX = 1002;
     ID_CLOSE = 1003;
+    ID_DEV = 1004;
     ALPHA_IDLE = 60;    // faint but still findable when the cursor is away
     ALPHA_ACTIVE = 255; // fully opaque while hovered
     ALPHA_STEP = 22;    // per-tick fade speed
@@ -52,6 +59,8 @@ var
     gBtnMin: HWND = 0;
     gBtnMax: HWND = 0;
     gBtnClose: HWND = 0;
+    gBtnDev: HWND = 0;                 // dev-tools button (dev mode only)
+    gDevProc: TDevToolsProc = nil;     // opens the browser dev-tools window
     gMoveOrigProc: LONG_PTR = 0;       // subclassed Move button's original WndProc
     gFont: HGDIOBJ = 0;                // current (DPI-scaled) button font
     gDpi: Integer = 96;                // DPI the bar is currently scaled for
@@ -265,11 +274,14 @@ end;
 *******************************************************************************}
 procedure rescaleBar(aDpi: Integer);
 var
-    btnW: Integer;
+    btnW, cnt, idx: Integer;
     newFont: HGDIOBJ;
 begin
     gDpi := aDpi;
-    gBarW := MulDiv(BAR_WIDTH, aDpi, 96);
+    cnt := 4;
+    if gBtnDev <> 0 then
+        Inc(cnt);
+    gBarW := MulDiv(BTN_WIDTH * cnt, aDpi, 96);
     gBarH := MulDiv(BAR_HEIGHT, aDpi, 96);
     btnW := MulDiv(BTN_WIDTH, aDpi, 96);
 
@@ -279,10 +291,16 @@ begin
 
     SetWindowPos(gBarWnd, 0, 0, 0, gBarW, gBarH,
         SWP_NOMOVE or SWP_NOZORDER or SWP_NOACTIVATE);
-    MoveWindow(gBtnMove, 0, 0, btnW, gBarH, True);
-    MoveWindow(gBtnMin, btnW, 0, btnW, gBarH, True);
-    MoveWindow(gBtnMax, btnW * 2, 0, btnW, gBarH, True);
-    MoveWindow(gBtnClose, btnW * 3, 0, btnW, gBarH, True);
+    // Order: Move, Min, Max, [Dev], Close.
+    idx := 0;
+    MoveWindow(gBtnMove, btnW * idx, 0, btnW, gBarH, True); Inc(idx);
+    MoveWindow(gBtnMin, btnW * idx, 0, btnW, gBarH, True); Inc(idx);
+    MoveWindow(gBtnMax, btnW * idx, 0, btnW, gBarH, True); Inc(idx);
+    if gBtnDev <> 0 then
+    begin
+        MoveWindow(gBtnDev, btnW * idx, 0, btnW, gBarH, True); Inc(idx);
+    end;
+    MoveWindow(gBtnClose, btnW * idx, 0, btnW, gBarH, True);
 
     if newFont <> 0 then
     begin
@@ -290,6 +308,8 @@ begin
         SendMessageW(gBtnMin, WM_SETFONT, WPARAM(newFont), 1);
         SendMessageW(gBtnMax, WM_SETFONT, WPARAM(newFont), 1);
         SendMessageW(gBtnClose, WM_SETFONT, WPARAM(newFont), 1);
+        if gBtnDev <> 0 then
+            SendMessageW(gBtnDev, WM_SETFONT, WPARAM(newFont), 1);
         if gFont <> 0 then
             DeleteObject(gFont);
         gFont := newFont;
@@ -368,6 +388,9 @@ begin
                             SetForegroundWindow(gMainWnd);
                         end;
                     ID_CLOSE: PostMessageW(gMainWnd, WM_CLOSE, 0, 0);
+                    ID_DEV:
+                        if Assigned(gDevProc) then
+                            gDevProc();
                 end;
                 Result := 0;
             end;
@@ -434,16 +457,22 @@ end;
 {*******************************************************************************
 * createControlBar
 *******************************************************************************}
-procedure createControlBar(aMainWindow: HWND; aFullScreen: Boolean);
+procedure createControlBar(aMainWindow: HWND; aFullScreen: Boolean;
+    aDevTools: Boolean = False; aDevProc: TDevToolsProc = nil);
 var
     wc: WNDCLASSEXW;
     inst: HINST;
     font: HGDIOBJ;
     savedFull: Boolean;
     ml, mt, mr, mb: Integer;
+    nx, cnt: Integer;
 begin
     gMainWnd := aMainWindow;
     gFull := aFullScreen;
+    gDevProc := aDevProc;
+    cnt := 4;
+    if aDevTools then
+        Inc(cnt);
     // Track resizes of the (restored) main window to remember its geometry.
     gMainOrigProc := SetWindowLongPtrW(gMainWnd, GWL_WNDPROC, LONG_PTR(PtrInt(@mainWndProc)));
     gScreenW := GetSystemMetrics(SM_CXSCREEN);
@@ -461,7 +490,7 @@ begin
 
     gBarWnd := CreateWindowExW(
         WS_EX_TOPMOST or WS_EX_TOOLWINDOW or WS_EX_NOACTIVATE or WS_EX_LAYERED,
-        BAR_CLASS, '', WS_POPUP, 0, 0, BAR_WIDTH, BAR_HEIGHT, 0, 0, inst, nil);
+        BAR_CLASS, '', WS_POPUP, 0, 0, BTN_WIDTH * cnt, BAR_HEIGHT, 0, 0, inst, nil);
     if gBarWnd = 0 then
         Exit;
 
@@ -472,10 +501,17 @@ begin
     if font = 0 then
         font := GetStockObject(DEFAULT_GUI_FONT);
     gFont := font;   // tracked so a DPI rescale can free it
+    // Order: Move, Min, Max, [Dev], Close.
     gBtnMove := addButton(UnicodeString(#$2725), ID_MOVE, 0, inst, font);              // move handle
     gBtnMin := addButton(UnicodeString(#$2013), ID_MIN, BTN_WIDTH, inst, font);        // en dash
     gBtnMax := addButton(UnicodeString(#$25A1), ID_MAX, BTN_WIDTH * 2, inst, font);    // square
-    gBtnClose := addButton(UnicodeString(#$2715), ID_CLOSE, BTN_WIDTH * 3, inst, font); // cross
+    nx := BTN_WIDTH * 3;
+    if aDevTools then
+    begin
+        gBtnDev := addButton(UnicodeString('</>'), ID_DEV, nx, inst, font);            // dev tools
+        Inc(nx, BTN_WIDTH);
+    end;
+    gBtnClose := addButton(UnicodeString(#$2715), ID_CLOSE, nx, inst, font);           // cross
     // Subclass Move so a mouse-press starts a title-bar-style window drag.
     if gBtnMove <> 0 then
         gMoveOrigProc := SetWindowLongPtrW(gBtnMove, GWL_WNDPROC, LONG_PTR(PtrInt(@moveBtnProc)));
