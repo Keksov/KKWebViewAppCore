@@ -473,6 +473,11 @@ begin
     cnt := 4;
     if aDevTools then
         Inc(cnt);
+    // Set the bar width from the button count now, so it is correct even on a
+    // 96-DPI monitor where rescaleBar (which also sizes from the count) never
+    // runs — otherwise updateBar would shrink the bar and clip the last button.
+    gBarW := BTN_WIDTH * cnt;
+    gBarH := BAR_HEIGHT;
     // Track resizes of the (restored) main window to remember its geometry.
     gMainOrigProc := SetWindowLongPtrW(gMainWnd, GWL_WNDPROC, LONG_PTR(PtrInt(@mainWndProc)));
     gScreenW := GetSystemMetrics(SM_CXSCREEN);
