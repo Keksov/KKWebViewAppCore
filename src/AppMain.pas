@@ -7,7 +7,7 @@ program AppMain;
 
 uses
     Math, Windows, SysUtils, webview, AppConfig, AppLaunch, AppUpdate,
-    AppWindowState, AppBar, AppSplash, AppProfile, AppBranding;
+    AppWindowState, AppWindowMode, AppBar, AppSplash, AppProfile, AppBranding;
 
 const
     // How long the native splash lingers (topmost) after the WebView2 window is

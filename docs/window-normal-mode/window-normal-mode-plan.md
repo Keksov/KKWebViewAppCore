@@ -109,7 +109,7 @@ switching must not double-subclass (see WN-D5).
 - **Phase 1 — mode model + styling**
   - [x] WN1.1 Persist display mode: `saveDispMode` / `loadDispMode` (`dispmode=kiosk|normal`)
         in AppWindowState; launch reads it.
-  - [ ] WN1.2 Normal styling primitive: `setKioskMode` / `setNormalMode` that swap
+  - [x] WN1.2 Normal styling primitive: `setKioskMode` / `setNormalMode` that swap
         `GWL_STYLE`, apply `SWP_FRAMECHANGED`, and restore the target geometry (factor out of
         `AppBar.applyMainGeometry`).
   - [ ] WN1.3 Unify main-window geometry tracking into one subclass (WN-D5).
