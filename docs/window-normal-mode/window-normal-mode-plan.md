@@ -64,17 +64,14 @@ switching must not double-subclass (see WN-D5).
   minimize/maximize/close, dragging, and Aero snap, so the floating bar is redundant and
   would visually double up. In Normal mode the AppBar is not shown (kept created-but-hidden,
   or destroyed and re-created on switch back — decide in WN2.1).
-- **WN-D3 — Way back to kiosk without the bar.** Because the bar is gone in Normal mode,
-  the Kiosk⇄Normal toggle needs another entry point. Options:
-  1. **Bound JS function** the web UI calls (like `__appcoreExit` via `webview_bind`) —
-     recommended; the SoundTrainer settings page can host a "Режим окна" switch that works
-     in both directions.
+- **WN-D3 — Way back to kiosk without the bar (RESOLVED: web-UI + system menu).** Because
+  the bar is gone in Normal mode, the Kiosk⇄Normal toggle is provided by **both**:
+  1. **Bound JS function** the web UI calls (like `__appcoreExit` via `webview_bind`); the
+     SoundTrainer settings page hosts a "Режим окна" switch that works in both directions.
   2. **System-menu item** — `AppendMenu` to `GetSystemMenu`, handled via `WM_SYSCOMMAND`;
      works even without the web app and is discoverable from the title-bar icon in Normal
-     mode.
-  3. **Hotkey** (e.g. F11 or Ctrl+Shift+Enter) as a keyboard fallback.
-  Proposed: ship **(1) + (2)** — a web-UI switch for users, a system-menu item as the
-  no-web fallback. Confirm.
+     mode. A "Полноэкранный режим" / "Обычное окно" item toggles the mode.
+  (No global hotkey for now.)
 - **WN-D4 — Runtime switch mechanics (no webview re-create).** Swap `GWL_STYLE`
   (`WS_POPUP` ⇄ `WS_OVERLAPPEDWINDOW`), `SetWindowPos(..., SWP_FRAMECHANGED)`, restore the
   target mode's saved geometry, re-layout the WebView2 child to the new **client** rect,
@@ -84,22 +81,26 @@ switching must not double-subclass (see WN-D5).
   subclass is installed, routing to `win=` in Normal mode and `kioskrect` in kiosk mode.
   Avoid AppBar and AppWindowState both replacing `GWL_WNDPROC` and losing each other's
   original proc across a runtime switch.
-- **WN-D6 — Launch precedence.** On next launch the initial mode resolves as: `-FullScreen`
-  (forced CLI) → Kiosk always; else saved `dispmode` if present; else `cfg.FullScreen`
-  default. Confirm this ordering (esp. whether a saved Normal should override a
-  `cfg.FullScreen=true` deployment default).
+- **WN-D6 — Launch precedence (RESOLVED: default Kiosk).** On launch the initial mode
+  resolves as: `-FullScreen` (forced CLI) → Kiosk always; else the saved `dispmode` if
+  present (so a user who switched to Normal stays in Normal, and one who switched back stays
+  in Kiosk); else **Kiosk by default**. `cfg.FullScreen` stays the deployment knob and
+  remains `true` for kiosk deployments; a first run with no saved `dispmode` comes up in
+  Kiosk.
+- **WN-D7 — Normal remembers maximized (RESOLVED: yes).** Normal mode persists and restores
+  the maximized state, reusing the existing `win=<l t r b showCmd>` mechanism
+  (`showCmd = SW_SHOWMAXIMIZED` when maximized) that the current windowed path already
+  implements.
+- **WN-D8 — DevTools reachable in Normal (RESOLVED: menu item).** In addition to F12 (dev
+  mode), add a DevTools entry to the Normal-mode system menu when running in dev mode, since
+  the AppBar's `</>` button is not shown there.
 
-## Open questions (need your call)
+## Open questions — RESOLVED
 
-1. **Toggle entry points** (WN-D3): web-UI switch, system-menu item, hotkey — which of the
-   three (recommendation: web-UI + system-menu)?
-2. **Maximized memory**: should Normal mode remember a maximized window (reuse `win=`
-   `showCmd = SW_SHOWMAXIMIZED`, as the existing windowed path already does)?
-3. **Default for new installs**: keep starting in Kiosk (today's default) unless the user
-   switches, or make Normal the default for some deployments?
-4. **Dev-tools access in Normal mode**: the `</>` button lives on the AppBar (kiosk only).
-   In dev mode F12 already opens DevTools, so Normal is covered by F12 — acceptable, or add
-   a menu item too?
+1. **Toggle entry points** → web-UI switch **and** system-menu item (no hotkey). → WN-D3.
+2. **Maximized memory** → yes, reuse `win=` `showCmd`. → WN-D7.
+3. **Default for new installs** → Kiosk. → WN-D6.
+4. **DevTools in Normal mode** → add a system-menu item (in dev mode), alongside F12. → WN-D8.
 
 ## Phases / steps (atomic)
 
@@ -115,8 +116,9 @@ switching must not double-subclass (see WN-D5).
 - **Phase 2 — runtime switching**
   - [ ] WN2.1 Live toggle in AppMain: switch mode, hide/show AppBar, sync `gFull`, persist
         `dispmode`.
-  - [ ] WN2.2 Toggle entry points (WN-D3): bound JS function + system-menu item (+ optional
-        hotkey).
+  - [ ] WN2.2 Toggle entry points (WN-D3): bound JS function (`__appcoreSetWindowMode` /
+        toggle) + a system-menu item (`AppendMenu` + `WM_SYSCOMMAND`); add a DevTools
+        system-menu item in dev mode (WN-D8).
   - [ ] WN2.3 Re-layout the WebView2 child to the client rect on switch (fills area under
         the caption in Normal, full window in kiosk).
 - **Phase 3 — launch + config**
