@@ -15,6 +15,11 @@ const
     // splash is removed — avoids a blank-white flash on the swap.
     SPLASH_LINGER_MS = 700;
 
+    // Custom WM_SYSCOMMAND ids for the Normal-mode system menu (WN2.2). Must be < $F000
+    // and have a zero low nibble (the system uses the low 4 bits of WM_SYSCOMMAND wParam).
+    IDM_TOGGLE_MODE = $A010;   // toggle Kiosk <-> Normal
+    IDM_DEVTOOLS    = $A020;   // open DevTools (dev mode only, WN-D8)
+
 var
     wnd: HWND;
     i: Integer;
@@ -289,11 +294,31 @@ begin
 end;
 
 {*******************************************************************************
+* addSystemMenuItems
+* Rebuilds the Normal-mode window system menu: reverts to the default, then appends a
+* "toggle mode" item and (in dev mode) a DevTools item (WN2.2 / WN-D8). Reverting first
+* means re-entering Normal mode never duplicates the items.
+*******************************************************************************}
+procedure addSystemMenuItems(aWnd: HWND);
+var
+    sysMenu: HMENU;
+begin
+    GetSystemMenu(aWnd, True);            // revert to default (drops any prior custom items)
+    sysMenu := GetSystemMenu(aWnd, False);
+    if sysMenu = 0 then
+        Exit;
+    AppendMenuW(sysMenu, MF_SEPARATOR, 0, nil);
+    AppendMenuW(sysMenu, MF_STRING, IDM_TOGGLE_MODE, PWideChar(UnicodeString('Полноэкранный режим')));
+    if gDevMode then
+        AppendMenuW(sysMenu, MF_STRING, IDM_DEVTOOLS, PWideChar(UnicodeString('Инструменты разработчика')));
+end;
+
+{*******************************************************************************
 * setWindowMode
 * Switches the display mode at runtime (WN2.1). To Normal: hide the floating bar, swap
-* to an OS-decorated frame and restore the saved windowed placement. To Kiosk: build the
-* bar the first time (or re-activate it) and re-assert the borderless kiosk geometry. The
-* chosen mode is persisted so it is restored next launch (WN-D1).
+* to an OS-decorated frame, restore the saved windowed placement and build the system
+* menu. To Kiosk: build the bar the first time (or re-activate it) and re-assert the
+* borderless kiosk geometry. The chosen mode is persisted so it is restored next launch.
 *******************************************************************************}
 procedure setWindowMode(aMode: TWindowMode);
 begin
@@ -306,6 +331,7 @@ begin
         setTrackMode(wmNormal);
         applyNormalStyle(gMainWnd);       // OS-decorated frame
         applyNormalPlacement(gMainWnd);   // position + show from saved win= (WN-D7)
+        addSystemMenuItems(gMainWnd);     // "toggle mode" + DevTools items (WN2.2)
     end
     else
     begin
@@ -320,6 +346,56 @@ begin
     end;
     saveDispMode(windowModeToString(aMode));
     SetForegroundWindow(gMainWnd);
+end;
+
+{*******************************************************************************
+* otherMode — the display mode opposite to the current one (for toggle actions).
+*******************************************************************************}
+function otherMode(): TWindowMode;
+begin
+    if gWindowMode = wmNormal then
+        Result := wmKiosk
+    else
+        Result := wmNormal;
+end;
+
+{*******************************************************************************
+* handleSetWindowMode
+* Bound JS callback (window.__appcoreSetWindowMode): switches the display mode. The arg
+* is a JSON array; "normal" or "kiosk" in it selects that mode, anything else toggles.
+*******************************************************************************}
+procedure handleSetWindowMode(const aSeq: PAnsiChar; const aReq: PAnsiChar; aArg: Pointer); cdecl;
+var
+    req: string;
+    raw: UTF8String;
+    target: TWindowMode;
+begin
+    raw := aReq;                        // copy the null-terminated UTF-8 args
+    req := LowerCase(string(raw));
+    if Pos('normal', req) > 0 then
+        target := wmNormal
+    else if Pos('kiosk', req) > 0 then
+        target := wmKiosk
+    else
+        target := otherMode();
+    setWindowMode(target);
+    webview_return(PWebView(aArg), aSeq, 0, PAnsiChar('null'));
+end;
+
+{*******************************************************************************
+* onSysCommand
+* Handles the custom Normal-mode system-menu items (WN2.2): toggle the display mode or
+* open DevTools. Returns True when it handled the command.
+*******************************************************************************}
+function onSysCommand(aCmd: WPARAM): Boolean;
+begin
+    Result := True;
+    if aCmd = IDM_TOGGLE_MODE then
+        setWindowMode(otherMode())
+    else if aCmd = IDM_DEVTOOLS then
+        openDevTools()
+    else
+        Result := False;
 end;
 
 {*******************************************************************************
@@ -513,6 +589,9 @@ begin
     end;
 
     webview_bind(w, PAnsiChar(toUtf8('__appcoreExit')), @handleExit, w);
+    // Runtime window-mode switch from the web UI + the Normal-mode system menu (WN2.2).
+    webview_bind(w, PAnsiChar(toUtf8('__appcoreSetWindowMode')), @handleSetWindowMode, w);
+    setSysCommandHandler(@onSysCommand);
     webview_init(w, PAnsiChar(toUtf8(
         'document.addEventListener("keydown",function(e){' +
         'if(e.key==="Escape")window.__appcoreExit();' +

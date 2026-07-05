@@ -116,10 +116,10 @@ switching must not double-subclass (see WN-D5).
 - **Phase 2 — runtime switching**
   - [x] WN2.1 Live toggle in AppMain: switch mode, hide/show AppBar, sync `gFull`, persist
         `dispmode`.
-  - [ ] WN2.2 Toggle entry points (WN-D3): bound JS function (`__appcoreSetWindowMode` /
+  - [x] WN2.2 Toggle entry points (WN-D3): bound JS function (`__appcoreSetWindowMode` /
         toggle) + a system-menu item (`AppendMenu` + `WM_SYSCOMMAND`); add a DevTools
         system-menu item in dev mode (WN-D8).
-  - [ ] WN2.3 Re-layout the WebView2 child to the client rect on switch (fills area under
+  - [x] WN2.3 Re-layout the WebView2 child to the client rect on switch (fills area under
         the caption in Normal, full window in kiosk).
 - **Phase 3 — launch + config**
   - [ ] WN3.1 Initial-mode resolution per WN-D6 (`-FullScreen` / saved `dispmode` /

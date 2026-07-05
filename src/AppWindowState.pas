@@ -14,6 +14,10 @@ type
       refill the monitor (fullscreen) or remember the restored rect (WN-D5). }
     TKioskDragEndProc = procedure();
 
+    { Called on WM_SYSCOMMAND with the masked command; returns True if it handled a custom
+      system-menu item (so the tracker swallows it) — used for the Normal-mode menu (WN2.2). }
+    TSysCommandProc = function(aCmd: WPARAM): Boolean;
+
 { Remembers the window state across runs, stored next to the exe when that folder is
   writable, otherwise in the user's temp directory under a name derived from the full
   exe path (so different installs keep separate state).
@@ -36,6 +40,7 @@ procedure flushWindowState();
 procedure installMainTracker(aWnd: HWND);
 procedure setTrackMode(aMode: TWindowMode);
 procedure setKioskDragEndHandler(aProc: TKioskDragEndProc);
+procedure setSysCommandHandler(aProc: TSysCommandProc);
 procedure applyNormalPlacement(aWnd: HWND);
 procedure saveDispMode(const aMode: string);
 function loadDispMode(out aMode: string): Boolean;
@@ -60,6 +65,7 @@ var
     gShowCmd: Integer = SW_SHOWNORMAL;     // how to show once ready (normal/maximized)
     gTrackMode: TWindowMode = wmKiosk;     // which mode the tracker records geometry for
     gKioskDragEnd: TKioskDragEndProc = nil; // AppBar's kiosk drag/resize-end handler
+    gSysCmd: TSysCommandProc = nil;         // custom system-menu command handler (Normal mode)
 
 {*******************************************************************************
 * exePathKey — FNV-1a hash (hex) of the lowercased full exe path; the per-install
@@ -397,6 +403,11 @@ function stateWndProc(aWnd: HWND; aMsg: UINT; aWParam: WPARAM; aLParam: LPARAM):
 var
     s: string;
 begin
+    // Custom system-menu items (Normal mode) arrive as WM_SYSCOMMAND; let the app handle
+    // them and swallow the message. The low 4 bits are system-reserved (mask with $FFF0).
+    if (aMsg = WM_SYSCOMMAND) and Assigned(gSysCmd) then
+        if gSysCmd(aWParam and WPARAM($FFF0)) then
+            Exit(0);
     if gTrackMode = wmNormal then
     begin
         if ((aMsg = WM_WINDOWPOSCHANGED) or (aMsg = WM_SIZE)) and (not IsIconic(aWnd)) then
@@ -461,6 +472,14 @@ end;
 procedure setKioskDragEndHandler(aProc: TKioskDragEndProc);
 begin
     gKioskDragEnd := aProc;
+end;
+
+{*******************************************************************************
+* setSysCommandHandler — registers the custom WM_SYSCOMMAND handler (Normal-mode menu).
+*******************************************************************************}
+procedure setSysCommandHandler(aProc: TSysCommandProc);
+begin
+    gSysCmd := aProc;
 end;
 
 {*******************************************************************************
