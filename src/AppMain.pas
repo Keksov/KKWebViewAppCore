@@ -287,7 +287,7 @@ begin
     if sysMenu = 0 then
         Exit;
     AppendMenuW(sysMenu, MF_SEPARATOR, 0, nil);
-    AppendMenuW(sysMenu, MF_STRING, IDM_TOGGLE_MODE, PWideChar(UnicodeString('Полноэкранный режим')));
+    AppendMenuW(sysMenu, MF_STRING, IDM_TOGGLE_MODE, PWideChar(UnicodeString('Режим киоска')));
     if gDevMode then
         AppendMenuW(sysMenu, MF_STRING, IDM_DEVTOOLS, PWideChar(UnicodeString('Инструменты разработчика')));
 end;

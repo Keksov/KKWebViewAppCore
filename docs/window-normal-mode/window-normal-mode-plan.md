@@ -70,7 +70,7 @@ switching must not double-subclass (see WN-D5).
      SoundTrainer settings page hosts a "Режим окна" switch that works in both directions.
   2. **System-menu item** — `AppendMenu` to `GetSystemMenu`, handled via `WM_SYSCOMMAND`;
      works even without the web app and is discoverable from the title-bar icon in Normal
-     mode. A "Полноэкранный режим" / "Обычное окно" item toggles the mode.
+     mode. A "Режим киоска" item toggles the mode.
   (No global hotkey for now.) Additionally, **Ctrl-click** the control-bar Max button
   enters Normal mode (a plain click keeps the kiosk fullscreen/restored toggle).
 - **WN-D4 — Runtime switch mechanics (no webview re-create).** Swap `GWL_STYLE`
