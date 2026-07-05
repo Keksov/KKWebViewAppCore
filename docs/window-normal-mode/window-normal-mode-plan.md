@@ -114,7 +114,7 @@ switching must not double-subclass (see WN-D5).
         `AppBar.applyMainGeometry`).
   - [x] WN1.3 Unify main-window geometry tracking into one subclass (WN-D5).
 - **Phase 2 — runtime switching**
-  - [ ] WN2.1 Live toggle in AppMain: switch mode, hide/show AppBar, sync `gFull`, persist
+  - [x] WN2.1 Live toggle in AppMain: switch mode, hide/show AppBar, sync `gFull`, persist
         `dispmode`.
   - [ ] WN2.2 Toggle entry points (WN-D3): bound JS function (`__appcoreSetWindowMode` /
         toggle) + a system-menu item (`AppendMenu` + `WM_SYSCOMMAND`); add a DevTools

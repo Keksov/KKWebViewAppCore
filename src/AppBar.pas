@@ -23,6 +23,14 @@ type
 procedure createControlBar(aMainWindow: HWND; aFullScreen: Boolean;
     aDevTools: Boolean = False; aDevProc: TDevToolsProc = nil);
 
+{ Shows/hides the floating bar at runtime. In Normal mode the OS caption replaces it, so
+  it is deactivated (hidden and kept from re-showing) — WN-D2. }
+procedure setBarActive(aActive: Boolean);
+
+{ Re-activates kiosk mode from a running Normal window: shows the bar and re-asserts the
+  saved kiosk fullscreen/restored geometry. Use when the bar was already created. }
+procedure activateKioskBar();
+
 implementation
 
 uses
@@ -50,6 +58,7 @@ var
     gUsePreferredMon: Boolean = False; // during restore, target gPreferredPt's monitor
     gPreferredPt: TPoint;              // a point on the last-used monitor
     gAlpha: Integer = ALPHA_IDLE;
+    gBarActive: Boolean = True;        // False in Normal mode: bar hidden, geometry unmanaged
     gScreenW: Integer = 0;
     gScreenH: Integer = 0;
     gBarWnd: HWND = 0;
@@ -329,7 +338,8 @@ var
     target: Integer;
     barX, barTop: Integer;
 begin
-    if IsIconic(gMainWnd) or (not mainWindowIsActive) or (not GetWindowRect(gMainWnd, wr)) then
+    if (not gBarActive) or IsIconic(gMainWnd) or (not mainWindowIsActive)
+        or (not GetWindowRect(gMainWnd, wr)) then
     begin
         if IsWindowVisible(gBarWnd) then
             ShowWindow(gBarWnd, SW_HIDE);
@@ -363,8 +373,9 @@ begin
         WM_TIMER:
             begin
                 // Geometry set before the loop runs is overridden by the webview as
-                // it initializes, so re-assert the saved state for the first ~1s.
-                if gAssertTicks > 0 then
+                // it initializes, so re-assert the saved state for the first ~1s (kiosk
+                // only; skipped in Normal mode where the OS manages the frame).
+                if gBarActive and (gAssertTicks > 0) then
                 begin
                     applyMainGeometry(gFull);
                     Dec(gAssertTicks);
@@ -556,6 +567,28 @@ begin
     // Apply the resolved geometry synchronously so a caller can position the (still
     // hidden) window on the correct monitor BEFORE showing it — no flash on the
     // primary monitor. The timer above re-asserts it for ~1s as a safety net.
+    applyMainGeometry(gFull);
+end;
+
+{*******************************************************************************
+* setBarActive — enable/disable the floating bar. When disabled (Normal mode) the bar
+* is hidden and updateBar keeps it hidden and stops managing the window geometry.
+*******************************************************************************}
+procedure setBarActive(aActive: Boolean);
+begin
+    gBarActive := aActive;
+    if (not aActive) and (gBarWnd <> 0) and IsWindowVisible(gBarWnd) then
+        ShowWindow(gBarWnd, SW_HIDE);
+end;
+
+{*******************************************************************************
+* activateKioskBar — re-enter kiosk from Normal: mark the tracker kiosk, re-assert the
+* saved fullscreen/restored geometry, and let updateBar show the bar again.
+*******************************************************************************}
+procedure activateKioskBar();
+begin
+    gBarActive := True;
+    setTrackMode(wmKiosk);
     applyMainGeometry(gFull);
 end;
 

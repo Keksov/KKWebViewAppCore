@@ -36,6 +36,7 @@ procedure flushWindowState();
 procedure installMainTracker(aWnd: HWND);
 procedure setTrackMode(aMode: TWindowMode);
 procedure setKioskDragEndHandler(aProc: TKioskDragEndProc);
+procedure applyNormalPlacement(aWnd: HWND);
 procedure saveDispMode(const aMode: string);
 function loadDispMode(out aMode: string): Boolean;
 procedure saveKioskFull(aFull: Boolean);
@@ -328,6 +329,61 @@ procedure writeGeom();
 begin
     if gLastGeom <> '' then
         setStateValue('win', gLastGeom);
+end;
+
+{*******************************************************************************
+* centeredDefault — a centred 1024x768 rectangle on the primary monitor.
+*******************************************************************************}
+procedure centeredDefault(out aRect: TRect);
+var
+    sw, sh: Integer;
+begin
+    sw := GetSystemMetrics(SM_CXSCREEN);
+    sh := GetSystemMetrics(SM_CYSCREEN);
+    aRect.Left := (sw - 1024) div 2;
+    aRect.Top := (sh - 768) div 2;
+    aRect.Right := aRect.Left + 1024;
+    aRect.Bottom := aRect.Top + 768;
+end;
+
+{*******************************************************************************
+* applyNormalPlacement — positions and SHOWS the window from the saved 'win=' geometry
+* (normal or maximized, WN-D7), or a centred 1024x768 default when none is saved / it is
+* off-screen. Used when switching to Normal mode at runtime (WN2.1).
+*******************************************************************************}
+procedure applyNormalPlacement(aWnd: HWND);
+var
+    rest: string;
+    left, top, right, bottom, showCmd: Integer;
+    wp: TWindowPlacement;
+    r: TRect;
+begin
+    showCmd := SW_SHOWNORMAL;
+    if readValue('win', rest)
+        and nextInt(rest, left) and nextInt(rest, top) and nextInt(rest, right)
+        and nextInt(rest, bottom) and nextInt(rest, showCmd) then
+    begin
+        r.Left := left;
+        r.Top := top;
+        r.Right := right;
+        r.Bottom := bottom;
+    end
+    else
+        centeredDefault(r);
+    if (r.Right - r.Left <= 0) or (r.Bottom - r.Top <= 0) or (not onScreen(r)) then
+    begin
+        centeredDefault(r);
+        showCmd := SW_SHOWNORMAL;
+    end;
+    FillChar(wp, SizeOf(wp), 0);
+    wp.length := SizeOf(wp);
+    wp.rcNormalPosition := r;
+    if showCmd = SW_SHOWMAXIMIZED then
+        wp.showCmd := SW_SHOWMAXIMIZED
+    else
+        wp.showCmd := SW_SHOWNORMAL;
+    SetWindowPlacement(aWnd, @wp);
+    gLastGeom := placementString(aWnd);
 end;
 
 {*******************************************************************************

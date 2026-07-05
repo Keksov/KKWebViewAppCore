@@ -20,9 +20,9 @@ function windowModeToString(aMode: TWindowMode): string;
 function windowModeFromString(const aText: string; aDefault: TWindowMode): TWindowMode;
 
 { Applies the Normal (OS-decorated) window style to aWnd: WS_OVERLAPPEDWINDOW with a
-  frame change, then shows it with aShowCmd (SW_SHOWNORMAL, or SW_SHOWMAXIMIZED to
-  restore a maximized window - WN-D7). The caller restores the saved position first. }
-procedure applyNormalStyle(aWnd: HWND; aShowCmd: Integer);
+  frame change. Position + show (normal/maximized, WN-D7) are done by the caller via
+  AppWindowState.applyNormalPlacement. }
+procedure applyNormalStyle(aWnd: HWND);
 
 { Applies the borderless kiosk style (WS_POPUP) to aWnd. The rich fullscreen/monitor
   geometry is (re)asserted by the AppBar; this just swaps the frame off. }
@@ -66,19 +66,15 @@ end;
 
 {*******************************************************************************
 * applyNormalStyle
-* Swaps aWnd to a standard OS-decorated window and shows it. The position must be set
-* by the caller (from the saved 'win=' geometry) before/around this call; here only the
-* frame style changes and the window is shown normal or maximized.
+* Swaps aWnd to a standard OS-decorated window frame. The caller then positions and
+* shows it via AppWindowState.applyNormalPlacement (which honours the saved normal/
+* maximized state).
 *******************************************************************************}
-procedure applyNormalStyle(aWnd: HWND; aShowCmd: Integer);
+procedure applyNormalStyle(aWnd: HWND);
 begin
     SetWindowLongW(aWnd, GWL_STYLE, Integer(WS_OVERLAPPEDWINDOW or WS_VISIBLE));
     SetWindowPos(aWnd, 0, 0, 0, 0, 0,
         SWP_FRAMECHANGED or SWP_NOMOVE or SWP_NOSIZE or SWP_NOZORDER or SWP_NOACTIVATE);
-    if aShowCmd = SW_SHOWMAXIMIZED then
-        ShowWindow(aWnd, SW_SHOWMAXIMIZED)
-    else
-        ShowWindow(aWnd, SW_SHOWNORMAL);
 end;
 
 {*******************************************************************************

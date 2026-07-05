@@ -30,6 +30,8 @@ var
     gMainWnd: HWND;           // WebView2 window, kept hidden until ready
     gUseFullScreen: Boolean;  // shared with the reveal callback
     gDevMode: Boolean;        // dev config: enables DevTools + the bar button
+    gWindowMode: TWindowMode; // current display mode (kiosk/normal), runtime-switchable
+    gBarBuilt: Boolean;       // the control bar has been created at least once
     useServices: Boolean;
     useFullScreen: Boolean;
     fullScreenForced: Boolean;
@@ -278,10 +280,45 @@ begin
         // createControlBar positions the (still hidden) window on the saved kiosk
         // monitor first; then show it there directly — no primary-monitor flash.
         createControlBar(gMainWnd, True, gDevMode, @openDevTools);
+        gBarBuilt := True;
         ShowWindow(gMainWnd, SW_SHOW);
     end
     else
         ShowWindow(gMainWnd, restoredShowCmd);
+    SetForegroundWindow(gMainWnd);
+end;
+
+{*******************************************************************************
+* setWindowMode
+* Switches the display mode at runtime (WN2.1). To Normal: hide the floating bar, swap
+* to an OS-decorated frame and restore the saved windowed placement. To Kiosk: build the
+* bar the first time (or re-activate it) and re-assert the borderless kiosk geometry. The
+* chosen mode is persisted so it is restored next launch (WN-D1).
+*******************************************************************************}
+procedure setWindowMode(aMode: TWindowMode);
+begin
+    if (gMainWnd = 0) or (aMode = gWindowMode) then
+        Exit;
+    gWindowMode := aMode;
+    if aMode = wmNormal then
+    begin
+        setBarActive(False);              // hide the floating control bar (WN-D2)
+        setTrackMode(wmNormal);
+        applyNormalStyle(gMainWnd);       // OS-decorated frame
+        applyNormalPlacement(gMainWnd);   // position + show from saved win= (WN-D7)
+    end
+    else
+    begin
+        setTrackMode(wmKiosk);
+        if not gBarBuilt then
+        begin
+            createControlBar(gMainWnd, True, gDevMode, @openDevTools);
+            gBarBuilt := True;
+        end
+        else
+            activateKioskBar();
+    end;
+    saveDispMode(windowModeToString(aMode));
     SetForegroundWindow(gMainWnd);
 end;
 
