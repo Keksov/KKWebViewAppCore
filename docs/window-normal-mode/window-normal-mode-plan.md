@@ -112,7 +112,7 @@ switching must not double-subclass (see WN-D5).
   - [x] WN1.2 Normal styling primitive: `setKioskMode` / `setNormalMode` that swap
         `GWL_STYLE`, apply `SWP_FRAMECHANGED`, and restore the target geometry (factor out of
         `AppBar.applyMainGeometry`).
-  - [ ] WN1.3 Unify main-window geometry tracking into one subclass (WN-D5).
+  - [x] WN1.3 Unify main-window geometry tracking into one subclass (WN-D5).
 - **Phase 2 — runtime switching**
   - [ ] WN2.1 Live toggle in AppMain: switch mode, hide/show AppBar, sync `gFull`, persist
         `dispmode`.

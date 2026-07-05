@@ -26,7 +26,7 @@ procedure createControlBar(aMainWindow: HWND; aFullScreen: Boolean;
 implementation
 
 uses
-    AppWindowState;
+    AppWindowState, AppWindowMode;
 
 const
     BAR_CLASS: PWideChar = 'AppCoreControlBar';
@@ -49,7 +49,6 @@ var
     gAssertTicks: Integer = 0;         // re-assert startup geometry for this many ticks
     gUsePreferredMon: Boolean = False; // during restore, target gPreferredPt's monitor
     gPreferredPt: TPoint;              // a point on the last-used monitor
-    gMainOrigProc: LONG_PTR = 0;       // subclassed main window's original WndProc
     gAlpha: Integer = ALPHA_IDLE;
     gScreenW: Integer = 0;
     gScreenH: Integer = 0;
@@ -418,23 +417,20 @@ begin
 end;
 
 {*******************************************************************************
-* mainWndProc
-* Subclass of the main window: when a resize of the restored (non-fullscreen)
-* window settles, remember its new geometry, then chain to the original proc.
+* kioskDragEnd
+* Registered with AppWindowState's tracker and invoked when a drag/resize of the main
+* window settles while in kiosk mode: a fullscreen window dragged to another monitor
+* refills that monitor; a restored window remembers its new geometry (WN-D5).
 *******************************************************************************}
-function mainWndProc(aWnd: HWND; aMsg: UINT; aWParam: WPARAM; aLParam: LPARAM): LRESULT; stdcall;
+procedure kioskDragEnd();
 begin
-    if aMsg = WM_EXITSIZEMOVE then
+    if gFull then
     begin
-        if gFull then
-        begin
-            applyMainGeometry(True);      // dragged to another monitor -> fill it
-            rememberFullscreenMonitor;    // and remember that monitor
-        end
-        else
-            saveKioskRect(gMainWnd);      // remember the moved/resized restored geometry
-    end;
-    Result := CallWindowProcW(TFNWndProc(Pointer(gMainOrigProc)), aWnd, aMsg, aWParam, aLParam);
+        applyMainGeometry(True);      // dragged to another monitor -> fill it
+        rememberFullscreenMonitor;    // and remember that monitor
+    end
+    else
+        saveKioskRect(gMainWnd);      // remember the moved/resized restored geometry
 end;
 
 {*******************************************************************************
@@ -478,8 +474,12 @@ begin
     // runs — otherwise updateBar would shrink the bar and clip the last button.
     gBarW := BTN_WIDTH * cnt;
     gBarH := BAR_HEIGHT;
-    // Track resizes of the (restored) main window to remember its geometry.
-    gMainOrigProc := SetWindowLongPtrW(gMainWnd, GWL_WNDPROC, LONG_PTR(PtrInt(@mainWndProc)));
+    // Install the single mode-aware window tracker (AppWindowState) in kiosk mode; the
+    // AppBar handles the kiosk drag/resize-end via a callback, so there is exactly one
+    // main-window subclass regardless of the starting mode (WN-D5).
+    installMainTracker(gMainWnd);
+    setTrackMode(wmKiosk);
+    setKioskDragEndHandler(@kioskDragEnd);
     gScreenW := GetSystemMetrics(SM_CXSCREEN);
     gScreenH := GetSystemMetrics(SM_CYSCREEN);
     inst := GetModuleHandleW(nil);

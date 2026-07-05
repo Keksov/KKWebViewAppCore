@@ -7,7 +7,12 @@ unit AppWindowState;
 interface
 
 uses
-    Windows;
+    Windows, AppWindowMode;
+
+type
+    { Called on the main window's drag/resize end while in kiosk mode, so the AppBar can
+      refill the monitor (fullscreen) or remember the restored rect (WN-D5). }
+    TKioskDragEndProc = procedure();
 
 { Remembers the window state across runs, stored next to the exe when that folder is
   writable, otherwise in the user's temp directory under a name derived from the full
@@ -28,6 +33,9 @@ uses
 procedure attachWindowState(aWnd: HWND);
 function restoredShowCmd(): Integer;
 procedure flushWindowState();
+procedure installMainTracker(aWnd: HWND);
+procedure setTrackMode(aMode: TWindowMode);
+procedure setKioskDragEndHandler(aProc: TKioskDragEndProc);
 procedure saveDispMode(const aMode: string);
 function loadDispMode(out aMode: string): Boolean;
 procedure saveKioskFull(aFull: Boolean);
@@ -49,6 +57,8 @@ var
     gOrigProc: LONG_PTR = 0;              // subclassed window's original WndProc
     gLastGeom: string = '';               // latest "left top right bottom showCmd"
     gShowCmd: Integer = SW_SHOWNORMAL;     // how to show once ready (normal/maximized)
+    gTrackMode: TWindowMode = wmKiosk;     // which mode the tracker records geometry for
+    gKioskDragEnd: TKioskDragEndProc = nil; // AppBar's kiosk drag/resize-end handler
 
 {*******************************************************************************
 * exePathKey — FNV-1a hash (hex) of the lowercased full exe path; the per-install
@@ -321,29 +331,42 @@ begin
 end;
 
 {*******************************************************************************
-* stateWndProc — subclass proc: records the geometry on every move/size (while not
-* minimized) and persists it as soon as a move/resize settles or the window is
-* maximized/restored, then chains to the original proc.
+* stateWndProc — the single main-window subclass (WN-D5). In Normal mode it records
+* the windowed geometry (win=) on move/size and persists it when a move/resize settles
+* or the window is maximized/restored. In Kiosk mode it defers a drag/resize-end to the
+* AppBar's handler (refill monitor / remember restored rect), or saves the kiosk rect if
+* no handler is registered. Then chains to the original proc.
 *******************************************************************************}
 function stateWndProc(aWnd: HWND; aMsg: UINT; aWParam: WPARAM; aLParam: LPARAM): LRESULT; stdcall;
 var
     s: string;
 begin
-    if ((aMsg = WM_WINDOWPOSCHANGED) or (aMsg = WM_SIZE)) and (not IsIconic(aWnd)) then
+    if gTrackMode = wmNormal then
     begin
-        s := placementString(aWnd);
-        if s <> '' then
-            gLastGeom := s;
-        if (aMsg = WM_SIZE) and ((aWParam = SIZE_MAXIMIZED) or (aWParam = SIZE_RESTORED)) then
+        if ((aMsg = WM_WINDOWPOSCHANGED) or (aMsg = WM_SIZE)) and (not IsIconic(aWnd)) then
+        begin
+            s := placementString(aWnd);
+            if s <> '' then
+                gLastGeom := s;
+            if (aMsg = WM_SIZE) and ((aWParam = SIZE_MAXIMIZED) or (aWParam = SIZE_RESTORED)) then
+                writeGeom;
+        end
+        else if aMsg = WM_EXITSIZEMOVE then
             writeGeom;
     end
     else if aMsg = WM_EXITSIZEMOVE then
-        writeGeom;
+    begin
+        if Assigned(gKioskDragEnd) then
+            gKioskDragEnd()
+        else
+            saveKioskRect(aWnd);
+    end;
     Result := CallWindowProcW(TFNWndProc(Pointer(gOrigProc)), aWnd, aMsg, aWParam, aLParam);
 end;
 
 {*******************************************************************************
-* attachWindowState
+* attachWindowState — Normal/windowed start: restore the saved geometry, then install
+* the tracker in Normal mode.
 *******************************************************************************}
 procedure attachWindowState(aWnd: HWND);
 begin
@@ -351,7 +374,37 @@ begin
         Exit;
     restoreWindowState(aWnd);
     gLastGeom := placementString(aWnd);
+    setTrackMode(wmNormal);
+    installMainTracker(aWnd);
+end;
+
+{*******************************************************************************
+* installMainTracker — installs the single main-window subclass once (idempotent).
+* Used by attachWindowState (Normal start) and by the AppBar (kiosk start), so exactly
+* one subclass is ever present regardless of the starting mode (WN-D5).
+*******************************************************************************}
+procedure installMainTracker(aWnd: HWND);
+begin
+    if (aWnd = 0) or (gOrigProc <> 0) then
+        Exit;
     gOrigProc := SetWindowLongPtrW(aWnd, GWL_WNDPROC, LONG_PTR(PtrInt(@stateWndProc)));
+end;
+
+{*******************************************************************************
+* setTrackMode — tells the tracker which mode's geometry to record (Normal -> win=,
+* Kiosk -> kioskrect via the drag-end handler).
+*******************************************************************************}
+procedure setTrackMode(aMode: TWindowMode);
+begin
+    gTrackMode := aMode;
+end;
+
+{*******************************************************************************
+* setKioskDragEndHandler — registers the AppBar's kiosk drag/resize-end handler.
+*******************************************************************************}
+procedure setKioskDragEndHandler(aProc: TKioskDragEndProc);
+begin
+    gKioskDragEnd := aProc;
 end;
 
 {*******************************************************************************
