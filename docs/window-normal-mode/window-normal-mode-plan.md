@@ -124,7 +124,7 @@ switching must not double-subclass (see WN-D5).
 - **Phase 3 — launch + config**
   - [x] WN3.1 Initial-mode resolution per WN-D6 (`-FullScreen` / saved `dispmode` /
         `cfg.FullScreen`).
-  - [ ] WN3.2 Web-UI control (cross-repo, SoundTrainer): a "Режим окна" toggle calling the
+  - [x] WN3.2 Web-UI control (cross-repo, SoundTrainer): a "Режим окна" toggle calling the
         bound native function.
 - **Phase 4 — verify**
   - [ ] WN4.1 Switch both ways at runtime; geometry persists per mode across restart; DPI
