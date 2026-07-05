@@ -107,7 +107,7 @@ switching must not double-subclass (see WN-D5).
 - **Phase 0 — spec**
   - [x] WN0.1 This plan.
 - **Phase 1 — mode model + styling**
-  - [ ] WN1.1 Persist display mode: `saveDispMode` / `loadDispMode` (`dispmode=kiosk|normal`)
+  - [x] WN1.1 Persist display mode: `saveDispMode` / `loadDispMode` (`dispmode=kiosk|normal`)
         in AppWindowState; launch reads it.
   - [ ] WN1.2 Normal styling primitive: `setKioskMode` / `setNormalMode` that swap
         `GWL_STYLE`, apply `SWP_FRAMECHANGED`, and restore the target geometry (factor out of

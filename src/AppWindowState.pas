@@ -13,19 +13,23 @@ uses
   writable, otherwise in the user's temp directory under a name derived from the full
   exe path (so different installs keep separate state).
 
-  Two independent pieces (an app uses one, per its mode):
+  Pieces:
+    dispmode=<kiosk|normal>              - the display mode, restored across runs (WN1.1)
     win=<left top right bottom showCmd>  - normal windowed geometry + maximized state
     kioskfull=<0|1>                      - fullscreen(1) / restored(0) for kiosk mode
 
-  Windowed: attachWindowState restores the geometry and tracks changes (subclassing
+  Windowed/Normal: attachWindowState restores the geometry and tracks changes (subclassing
   the window so state is captured even on X-button close / hard kill); flushWindowState
-  writes on shutdown. Kiosk: saveKioskFull / loadKioskFull persist the AppBar toggle. }
+  writes on shutdown. Kiosk: saveKioskFull / loadKioskFull persist the AppBar toggle.
+  saveDispMode / loadDispMode persist which mode the app is in (Kiosk vs Normal). }
 { Restores the saved windowed geometry WITHOUT showing the window (it is revealed
   later) and starts tracking changes. restoredShowCmd returns how it should be
   shown once ready: SW_SHOWMAXIMIZED if it was saved maximized, else SW_SHOWNORMAL. }
 procedure attachWindowState(aWnd: HWND);
 function restoredShowCmd(): Integer;
 procedure flushWindowState();
+procedure saveDispMode(const aMode: string);
+function loadDispMode(out aMode: string): Boolean;
 procedure saveKioskFull(aFull: Boolean);
 function loadKioskFull(out aFull: Boolean): Boolean;
 procedure saveKioskRect(aWnd: HWND);
@@ -365,6 +369,24 @@ end;
 procedure flushWindowState();
 begin
     writeGeom;
+end;
+
+{*******************************************************************************
+* saveDispMode / loadDispMode — persist the display mode ('kiosk' or 'normal') so
+* a runtime Kiosk<->Normal switch is restored on the next launch (WN1.1).
+*******************************************************************************}
+procedure saveDispMode(const aMode: string);
+begin
+    setStateValue('dispmode', aMode);
+end;
+
+function loadDispMode(out aMode: string): Boolean;
+var
+    v: string;
+begin
+    Result := readValue('dispmode', v);
+    if Result then
+        aMode := LowerCase(Trim(v));
 end;
 
 {*******************************************************************************
