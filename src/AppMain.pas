@@ -403,6 +403,14 @@ begin
 end;
 
 {*******************************************************************************
+* enterNormalMode — switch to Normal mode (registered as the AppBar Ctrl-click handler).
+*******************************************************************************}
+procedure enterNormalMode();
+begin
+    setWindowMode(wmNormal);
+end;
+
+{*******************************************************************************
 * revealWhenReady
 * Runs on the GUI thread (via webview_dispatch) once services are up: shows the
 * WebView2 window behind the still-topmost splash and navigates to the real app
@@ -611,6 +619,8 @@ begin
     // Runtime window-mode switch from the web UI + the Normal-mode system menu (WN2.2).
     webview_bind(w, PAnsiChar(toUtf8('__appcoreSetWindowMode')), @handleSetWindowMode, w);
     setSysCommandHandler(@onSysCommand);
+    setNormalModeHandler(@enterNormalMode);   // Ctrl-click the bar's Max button -> Normal
+
 
     // With services, a worker thread starts the servers, pushes status to the
     // native splash, then reveals the WebView2 window and closes the splash.

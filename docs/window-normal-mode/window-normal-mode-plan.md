@@ -71,7 +71,8 @@ switching must not double-subclass (see WN-D5).
   2. **System-menu item** — `AppendMenu` to `GetSystemMenu`, handled via `WM_SYSCOMMAND`;
      works even without the web app and is discoverable from the title-bar icon in Normal
      mode. A "Полноэкранный режим" / "Обычное окно" item toggles the mode.
-  (No global hotkey for now.)
+  (No global hotkey for now.) Additionally, **Ctrl-click** the control-bar Max button
+  enters Normal mode (a plain click keeps the kiosk fullscreen/restored toggle).
 - **WN-D4 — Runtime switch mechanics (no webview re-create).** Swap `GWL_STYLE`
   (`WS_POPUP` ⇄ `WS_OVERLAPPEDWINDOW`), `SetWindowPos(..., SWP_FRAMECHANGED)`, restore the
   target mode's saved geometry, re-layout the WebView2 child to the new **client** rect,

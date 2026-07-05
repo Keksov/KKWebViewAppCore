@@ -13,6 +13,9 @@ type
     { Invoked (on the GUI thread) when the dev-tools bar button is clicked. }
     TDevToolsProc = procedure();
 
+    { Invoked when the user Ctrl-clicks the Max/Restore button: switch to Normal mode. }
+    TNormalModeProc = procedure();
+
 { Creates an RDP-style floating control bar pinned to the top-center of the main
   window with minimize / restore-fullscreen / close buttons. The bar stays
   visible but faint and fades to fully opaque while the cursor is over it, so it
@@ -30,6 +33,10 @@ procedure setBarActive(aActive: Boolean);
 { Re-activates kiosk mode from a running Normal window: shows the bar and re-asserts the
   saved kiosk fullscreen/restored geometry. Use when the bar was already created. }
 procedure activateKioskBar();
+
+{ Registers the handler called when the user Ctrl-clicks the Max button (switch to Normal
+  mode). If unset, Ctrl-click falls back to the normal fullscreen/restored toggle. }
+procedure setNormalModeHandler(aProc: TNormalModeProc);
 
 implementation
 
@@ -69,6 +76,7 @@ var
     gBtnClose: HWND = 0;
     gBtnDev: HWND = 0;                 // dev-tools button (dev mode only)
     gDevProc: TDevToolsProc = nil;     // opens the browser dev-tools window
+    gNormalProc: TNormalModeProc = nil; // Ctrl-click Max -> switch to Normal mode
     gMoveOrigProc: LONG_PTR = 0;       // subclassed Move button's original WndProc
     gFont: HGDIOBJ = 0;                // current (DPI-scaled) button font
     gDpi: Integer = 96;                // DPI the bar is currently scaled for
@@ -390,6 +398,11 @@ begin
                 case LOWORD(aWParam) of
                     ID_MIN: ShowWindow(gMainWnd, SW_MINIMIZE);
                     ID_MAX:
+                        // Ctrl-click switches to Normal (OS-decorated) mode; a plain click
+                        // toggles kiosk fullscreen/restored as before.
+                        if (GetKeyState(VK_CONTROL) < 0) and Assigned(gNormalProc) then
+                            gNormalProc()
+                        else
                         begin
                             applyMainGeometry(not gFull);
                             saveKioskFull(gFull);   // remember fullscreen/restored
@@ -590,6 +603,14 @@ begin
     gBarActive := True;
     setTrackMode(wmKiosk);
     applyMainGeometry(gFull);
+end;
+
+{*******************************************************************************
+* setNormalModeHandler — registers the Ctrl-click-Max -> Normal-mode handler.
+*******************************************************************************}
+procedure setNormalModeHandler(aProc: TNormalModeProc);
+begin
+    gNormalProc := aProc;
 end;
 
 end.
