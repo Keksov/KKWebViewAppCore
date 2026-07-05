@@ -94,9 +94,9 @@ end;
 
 {*******************************************************************************
 * handleExit
-* Bound JS callback: terminates the run loop. WebView2's window.close() only
-* raises WindowCloseRequested, which the webview library does not handle, so a
-* native terminate is required to make ESC actually close the application.
+* Bound JS callback (window.__appcoreExit): terminates the run loop. WebView2's
+* window.close() only raises WindowCloseRequested, which the webview library does not
+* handle, so a native terminate is required for the web UI to close the app.
 *******************************************************************************}
 procedure handleExit(const aSeq: PAnsiChar; const aReq: PAnsiChar; aArg: Pointer); cdecl;
 begin
@@ -604,14 +604,13 @@ begin
         attachWindowState(wnd);
     end;
 
+    // Programmatic exit hook for the web UI (window.__appcoreExit()). No global ESC
+    // handler is injected — closing on ESC is non-standard; use Alt+F4, the window's
+    // Close button, or the system menu.
     webview_bind(w, PAnsiChar(toUtf8('__appcoreExit')), @handleExit, w);
     // Runtime window-mode switch from the web UI + the Normal-mode system menu (WN2.2).
     webview_bind(w, PAnsiChar(toUtf8('__appcoreSetWindowMode')), @handleSetWindowMode, w);
     setSysCommandHandler(@onSysCommand);
-    webview_init(w, PAnsiChar(toUtf8(
-        'document.addEventListener("keydown",function(e){' +
-        'if(e.key==="Escape")window.__appcoreExit();' +
-        '});')));
 
     // With services, a worker thread starts the servers, pushes status to the
     // native splash, then reveals the WebView2 window and closes the splash.

@@ -128,4 +128,4 @@ build\win_x64\bin\AppMain.exe -FullScreen              # fullscreen kiosk mode
 build\win_x64\bin\AppMain.exe -url http://example.com  # custom URL
 ```
 
-ESC or Alt+F4 closes the application.
+Alt+F4 (or the window's Close button / system menu) closes the application.
