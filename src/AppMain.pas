@@ -27,6 +27,7 @@ var
     cfg: TAppConfig;
     cfgErr: string;
     startUrl: string;
+    savedMode: string;        // persisted display mode ('kiosk'|'normal'), if any
     configPath: string;
     defaultCfg: string;
     gWebView: PWebView;       // shared with the startup thread
@@ -272,28 +273,6 @@ begin
 end;
 
 {*******************************************************************************
-* showMainWindow
-* Reveals the (until-now hidden) WebView2 window in one step, at the right
-* place/size/state — so it never flashes empty during startup. In full-screen it
-* also creates the control bar; in windowed mode it honours the restored
-* normal/maximized state.
-*******************************************************************************}
-procedure showMainWindow();
-begin
-    if gUseFullScreen then
-    begin
-        // createControlBar positions the (still hidden) window on the saved kiosk
-        // monitor first; then show it there directly — no primary-monitor flash.
-        createControlBar(gMainWnd, True, gDevMode, @openDevTools);
-        gBarBuilt := True;
-        ShowWindow(gMainWnd, SW_SHOW);
-    end
-    else
-        ShowWindow(gMainWnd, restoredShowCmd);
-    SetForegroundWindow(gMainWnd);
-end;
-
-{*******************************************************************************
 * addSystemMenuItems
 * Rebuilds the Normal-mode window system menu: reverts to the default, then appends a
 * "toggle mode" item and (in dev mode) a DevTools item (WN2.2 / WN-D8). Reverting first
@@ -311,6 +290,31 @@ begin
     AppendMenuW(sysMenu, MF_STRING, IDM_TOGGLE_MODE, PWideChar(UnicodeString('Полноэкранный режим')));
     if gDevMode then
         AppendMenuW(sysMenu, MF_STRING, IDM_DEVTOOLS, PWideChar(UnicodeString('Инструменты разработчика')));
+end;
+
+{*******************************************************************************
+* showMainWindow
+* Reveals the (until-now hidden) WebView2 window in one step, at the right
+* place/size/state — so it never flashes empty during startup. In Kiosk it also
+* creates the control bar; in Normal mode it honours the restored normal/maximized
+* state and builds the system menu (WN3.1).
+*******************************************************************************}
+procedure showMainWindow();
+begin
+    if gUseFullScreen then
+    begin
+        // createControlBar positions the (still hidden) window on the saved kiosk
+        // monitor first; then show it there directly — no primary-monitor flash.
+        createControlBar(gMainWnd, True, gDevMode, @openDevTools);
+        gBarBuilt := True;
+        ShowWindow(gMainWnd, SW_SHOW);
+    end
+    else
+    begin
+        ShowWindow(gMainWnd, restoredShowCmd);
+        addSystemMenuItems(gMainWnd);     // Normal at startup: add the toggle/DevTools items
+    end;
+    SetForegroundWindow(gMainWnd);
 end;
 
 {*******************************************************************************
@@ -495,11 +499,23 @@ begin
         profMark('autoupdate-checked');
         gConfig := cfg;                    // SplashLang for the splash title / tr()
         gDevMode := cfg.Mode = amDev;      // enables DevTools + the bar button
+        // Mode precedence (WN-D6): -FullScreen forces Kiosk; else a previously saved
+        // display mode wins (a runtime Kiosk<->Normal switch persists); else the
+        // deployment default cfg.FullScreen (true = Kiosk for kiosk deployments).
         if not fullScreenForced then
-            useFullScreen := cfg.FullScreen;
+        begin
+            if loadDispMode(savedMode) then
+                useFullScreen := (windowModeFromString(savedMode, wmKiosk) = wmKiosk)
+            else
+                useFullScreen := cfg.FullScreen;
+        end;
     end;
 
     gUseFullScreen := useFullScreen;
+    if useFullScreen then
+        gWindowMode := wmKiosk
+    else
+        gWindowMode := wmNormal;
     profMark('pre-splash');
 
     // Show the native Pixie banner NOW — before the TCP port probing, which can

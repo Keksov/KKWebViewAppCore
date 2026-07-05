@@ -122,7 +122,7 @@ switching must not double-subclass (see WN-D5).
   - [x] WN2.3 Re-layout the WebView2 child to the client rect on switch (fills area under
         the caption in Normal, full window in kiosk).
 - **Phase 3 — launch + config**
-  - [ ] WN3.1 Initial-mode resolution per WN-D6 (`-FullScreen` / saved `dispmode` /
+  - [x] WN3.1 Initial-mode resolution per WN-D6 (`-FullScreen` / saved `dispmode` /
         `cfg.FullScreen`).
   - [ ] WN3.2 Web-UI control (cross-repo, SoundTrainer): a "Режим окна" toggle calling the
         bound native function.
