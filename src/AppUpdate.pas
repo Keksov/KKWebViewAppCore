@@ -17,7 +17,7 @@ function applyExeAutoUpdate(const aSourceDir: string): Boolean;
 implementation
 
 uses
-    Windows, SysUtils;
+    Windows, SysUtils, IconStamper;
 
 const
     UPDATE_FILES: array[0..1] of string = ('AppMain.exe', 'libwebview.dll');
@@ -130,8 +130,10 @@ var
     srcDir: string;
     src: string;
     dst: string;
+    ico: string;
     i: Integer;
     updated: Boolean;
+    mainSwapped: Boolean;
 begin
     Result := False;
     curDir := ExtractFilePath(ParamStr(0));
@@ -148,13 +150,28 @@ begin
         Exit;
 
     updated := False;
+    mainSwapped := False;
     for i := Low(UPDATE_FILES) to High(UPDATE_FILES) do
     begin
         src := srcDir + UPDATE_FILES[i];
         dst := curDir + UPDATE_FILES[i];
         if sourceIsNewer(src, dst) then
             if swapFile(src, dst) then
+            begin
                 updated := True;
+                if SameText(UPDATE_FILES[i], 'AppMain.exe') then
+                    mainSwapped := True;
+            end;
+    end;
+
+    // The staged exe is the generic (icon-less) build; re-stamp the copy with this
+    // deployment's AppCore.ico so the auto-update does not drop the taskbar/Explorer
+    // icon (overlay-safe). Then relaunch runs the stamped binary.
+    if mainSwapped then
+    begin
+        ico := curDir + 'AppCore.ico';
+        if FileExists(ico) then
+            stampExeIcon(curDir + 'AppMain.exe', ico);
     end;
 
     if updated then
