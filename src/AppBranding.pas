@@ -25,42 +25,14 @@ procedure loadBranding(out aTitle: string; out aIconBig, aIconSmall: HICON);
 procedure applyWindowIcons(aWnd: HWND; aIconBig, aIconSmall: HICON);
 function appUserModelId(const aTitle: string): string;
 procedure setAppUserModelId(const aTitle: string);
-procedure setWindowTaskbarIdentity(aWnd: HWND; const aAumid, aIconResource: string);
 
 implementation
 
 uses
-    SysUtils, ActiveX, base64;
+    SysUtils, base64;
 
 function SetCurrentProcessExplicitAppUserModelID(aAppId: PWideChar): HResult; stdcall;
     external 'shell32' name 'SetCurrentProcessExplicitAppUserModelID';
-
-// Per-window taskbar identity: with an explicit process AppUserModelID that has no
-// installed shortcut, the taskbar button shows a blank icon unless the window's property
-// store also carries the AUMID + a RelaunchIconResource pointing at an icon.
-type
-    TPropertyKey = record
-        fmtid: TGUID;
-        pid: DWORD;
-    end;
-
-    IPropertyStore = interface(IUnknown)
-        ['{886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99}']
-        function GetCount(out aCount: DWORD): HResult; stdcall;
-        function GetAt(aProp: DWORD; out aKey: TPropertyKey): HResult; stdcall;
-        function GetValue(const aKey: TPropertyKey; out aValue: TPropVariant): HResult; stdcall;
-        function SetValue(const aKey: TPropertyKey; const aValue: TPropVariant): HResult; stdcall;
-        function Commit(): HResult; stdcall;
-    end;
-
-const
-    IID_IPropertyStore: TGUID = '{886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99}';
-    FMTID_AppUserModel: TGUID = '{9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3}';
-    PID_AUMID              = 5;   // PKEY_AppUserModel_ID
-    PID_RELAUNCH_ICON      = 8;   // PKEY_AppUserModel_RelaunchIconResource
-
-function SHGetPropertyStoreForWindow(aWnd: HWND; const aRiid: TGUID; out aPpv): HResult; stdcall;
-    external 'shell32' name 'SHGetPropertyStoreForWindow';
 
 {*******************************************************************************
 * readFileUtf8 — reads aPath as raw bytes, strips a UTF-8 BOM, returns UTF-16.
@@ -243,55 +215,6 @@ begin
     id := appUserModelId(aTitle);
     if id <> '' then
         SetCurrentProcessExplicitAppUserModelID(PWideChar(UnicodeString(id)));
-end;
-
-{*******************************************************************************
-* setStoreString — sets a string (VT_LPWSTR) property on aStore. Builds the PROPVARIANT
-* by hand (CoTaskMemAlloc'd wide string) rather than via InitPropVariantFromString, which
-* is not a stable propsys.dll export on all Windows versions.
-*******************************************************************************}
-procedure setStoreString(const aStore: IPropertyStore; const aKey: TPropertyKey; const aValue: string);
-var
-    ws: UnicodeString;
-    pv: TPropVariant;
-    bytes: Integer;
-begin
-    ws := UnicodeString(aValue);
-    FillChar(pv, SizeOf(pv), 0);
-    pv.vt := VT_LPWSTR;
-    bytes := (Length(ws) + 1) * SizeOf(WideChar);
-    pv.pwszVal := PWideChar(CoTaskMemAlloc(bytes));
-    if pv.pwszVal = nil then
-        Exit;
-    Move(PWideChar(ws)^, pv.pwszVal^, bytes);
-    aStore.SetValue(aKey, pv);    // the store copies the value
-    CoTaskMemFree(pv.pwszVal);
-end;
-
-{*******************************************************************************
-* setWindowTaskbarIdentity — stamps the AUMID and a RelaunchIconResource onto the
-* window's property store, so the taskbar button for a custom AUMID (with no installed
-* shortcut) shows the given icon instead of a blank one. aIconResource is "path,index"
-* (e.g. the exe with its embedded icon). No-op without a usable AUMID.
-*******************************************************************************}
-procedure setWindowTaskbarIdentity(aWnd: HWND; const aAumid, aIconResource: string);
-var
-    store: IPropertyStore;
-    keyId: TPropertyKey;
-    keyIcon: TPropertyKey;
-begin
-    if (aWnd = 0) or (aAumid = '') then
-        Exit;
-    if (SHGetPropertyStoreForWindow(aWnd, IID_IPropertyStore, store) <> S_OK) or (store = nil) then
-        Exit;
-    keyId.fmtid := FMTID_AppUserModel;
-    keyId.pid := PID_AUMID;
-    keyIcon.fmtid := FMTID_AppUserModel;
-    keyIcon.pid := PID_RELAUNCH_ICON;
-    setStoreString(store, keyId, aAumid);
-    if aIconResource <> '' then
-        setStoreString(store, keyIcon, aIconResource);
-    store.Commit;
 end;
 
 end.
