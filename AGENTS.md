@@ -117,12 +117,39 @@ several deployments, the per-deployment icon is stamped **after** copying:
 - **Overlay-safe:** FPC appends a ~1 MB symbol overlay after the PE sections, which
   `UpdateResource` would strip — so IconStamp captures the overlay first and
   re-appends it (byte-identical, EOF-relative) after stamping.
-- `deploy_to <target-server-dir>` copies `AppMain.exe` + `libwebview.dll` into a
-  deployment and stamps `AppMain.exe` with that dir's `AppCore.ico` in one step.
-  `build_app.bat` also auto-stamps the `KKLeftRight` deploy when `IconStamp.exe` and
-  `AppCore.ico` are present.
+- `build_app.bat` deploys `AppMain.exe` + `libwebview.dll` to **all** known deployments
+  (`KKLeftRight`, `SoundTrainer`, `MindWaveCore` — add new ones to the deploy list at the
+  bottom of the script) and stamps each with its own `AppCore.ico`. `deploy_to
+  <target-server-dir>` does the same for one target ad hoc.
+- The stamping core is shared (`src/IconStamper.pas`), so the **self-update**
+  (`AppUpdate`) and `sync-appcore-launcher.ps1` also re-stamp after copying the generic
+  bin exe — otherwise auto-update would drop the icon on every rebuild.
+- After stamping, `IconStamper` calls `SHChangeNotify(SHCNE_ASSOCCHANGED)` so the shell
+  re-reads the icon (a path that was previously unstamped keeps a stale cached icon
+  otherwise; a one-off `explorer.exe` restart also clears it).
 - Manual form: `bin\IconStamp.exe <target.exe> <icon.ico>`. The exe must not be
   running. `.ico`s are per-deployment binaries and are **not committed**.
+
+### Taskbar button identity (name + icon)
+
+Non-obvious Windows behaviour learned the hard way: the **taskbar button** keys off the
+process's **application identity (AppUserModelID)**, *not* the window's caption or
+`WM_SETICON` icon (those only drive the window title bar and the hover thumbnail). An
+unregistered exe with no AUMID shows the **exe filename** ("AppMain.exe") and a generic
+icon on the button, even though the caption/thumbnail are correct — `SetWindowText` on the
+window does **not** change the button.
+
+Fix (`AppBranding.setWindowTaskbarIdentity`, called from `AppMain` after the window is
+created): stamp the window's property store via `SHGetPropertyStoreForWindow` with
+- `PKEY_AppUserModel_ID` — a per-deployment AUMID (`appUserModelId`: ASCII of the title,
+  or an FNV-1a hash of the exe path when the title is non-ASCII, e.g. Cyrillic),
+- `PKEY_AppUserModel_RelaunchDisplayNameResource` — the deployment title (button label),
+- `PKEY_AppUserModel_RelaunchIconResource` — `"<exe>,0"` (its stamped icon; unquoted).
+
+Notes: build the `PROPVARIANT` by hand (`CoTaskMemAlloc` + `VT_LPWSTR`) — do **not** import
+`InitPropVariantFromString`, it is not a stable `propsys.dll` export. To *measure* the
+button objectively, use UIA (`Shell_TrayWnd` → descendant Buttons; each button's `Name` is
+its label) plus a screenshot — see the scratchpad `measure_taskbar.ps1` from that session.
 
 ## Config
 
