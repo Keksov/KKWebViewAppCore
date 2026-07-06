@@ -22,6 +22,11 @@ const
     RT_ICON_ID       = 3;      // RT_ICON
     RT_GROUP_ICON_ID = 14;     // RT_GROUP_ICON
     RES_LANG         = 1033;   // en-US; icons behave language-neutrally in the shell
+    SHCNE_ASSOCCHANGED = $08000000;
+    SHCNF_FLUSH        = $1000;
+
+procedure SHChangeNotify(aEventId: LongInt; aFlags: UINT; aItem1, aItem2: Pointer); stdcall;
+    external 'shell32' name 'SHChangeNotify';
 
 {*******************************************************************************
 * intRes — the integer-id form of a resource type/name (MAKEINTRESOURCE).
@@ -213,6 +218,9 @@ begin
             Exit;   // icon written but overlay not restored -> report failure
         end;
     end;
+    // The exe's icon changed; tell the shell to flush its icon cache so Explorer / the
+    // taskbar re-read it (a path may have a stale "unstamped" cache entry otherwise).
+    SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_FLUSH, nil, nil);
     Result := True;
 end;
 

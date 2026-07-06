@@ -580,8 +580,9 @@ begin
         webview_set_title(w, PAnsiChar(toUtf8('AppCore')));
     applyWindowIcons(wnd, brandIconBig, brandIconSmall);
     // Register the window's taskbar identity so the button shows the deployment name + icon
-    // instead of the exe filename ("AppMain.exe"): AUMID + display name + icon resource
-    // (the exe's own stamped icon, index 0).
+    // instead of the exe filename ("AppMain.exe"): AUMID + display name + icon resource.
+    // Prefer AppCore.ico (a stable data file) over the exe: the exe path may have a stale
+    // shell icon-cache entry from when it was unstamped; the .ico avoids that.
     setWindowTaskbarIdentity(wnd, appUserModelId(brandTitle), brandTitle, ParamStr(0) + ',0');
 
     // The webview library shows the window once, at a default size, via a queued
