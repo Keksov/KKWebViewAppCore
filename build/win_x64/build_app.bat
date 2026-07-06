@@ -6,7 +6,6 @@ set "ROOT_FPC_BIN=%ROOT_FPC_HOME%\bin\x86_64-win64"
 set "CFG_FILE=%~dp0fpc-x64.cfg"
 set "WEBVIEW_DLL_DIR=%~dp0..\..\webview\build\win_x64\core"
 set "SRC_DIR=%~dp0..\..\src"
-set "DEPLOY_DIR=%~dp0..\..\..\KKLeftRight\server"
 
 set "FPC=%ROOT_FPC_BIN%\fpc.exe"
 if defined FPC_EXE_x64 (
@@ -57,17 +56,43 @@ if %ERRORLEVEL% neq 0 (
 echo Copying libwebview.dll to bin...
 copy /Y "%WEBVIEW_DLL_DIR%\libwebview.dll" bin\ >nul
 
-if exist "%DEPLOY_DIR%\" (
-    echo Deploying artifacts to KKLeftRight\server...
-    copy /Y bin\AppMain.exe "%DEPLOY_DIR%\" >nul
-    copy /Y bin\libwebview.dll "%DEPLOY_DIR%\" >nul
-    rem Stamp the deployment's icon into the copied exe (overlay-safe), if available.
-    if exist "%DEPLOY_DIR%\AppCore.ico" if exist bin\IconStamp.exe (
-        echo Stamping deploy icon...
-        bin\IconStamp.exe "%DEPLOY_DIR%\AppMain.exe" "%DEPLOY_DIR%\AppCore.ico"
-    )
+rem Ensure the icon stamper exists (built once, like build_webview.bat).
+if not exist bin\IconStamp.exe (
+    echo IconStamp not built yet - building it...
+    call "%~dp0build_iconstamp.bat"
+)
+
+rem Deploy the exe + dll into every AppCore deployment and stamp its per-project icon
+rem (overlay-safe). Add a new project by copying one of these blocks with its server dir.
+set "DEP1=%~dp0..\..\..\KKLeftRight\server"
+set "DEP2=%~dp0..\..\..\SoundTrainer\server"
+set "DEP3=%~dp0..\..\..\..\KKMindWave\MindWaveCore\server"
+
+if exist "%DEP1%\" (
+    echo Deploying to KKLeftRight\server ...
+    copy /Y bin\AppMain.exe "%DEP1%\" >nul
+    copy /Y bin\libwebview.dll "%DEP1%\" >nul
+    if exist "%DEP1%\AppCore.ico" if exist bin\IconStamp.exe bin\IconStamp.exe "%DEP1%\AppMain.exe" "%DEP1%\AppCore.ico"
 ) else (
-    echo WARNING: deploy target not found, skipping: %DEPLOY_DIR%
+    echo Skip - not found: %DEP1%
+)
+
+if exist "%DEP2%\" (
+    echo Deploying to SoundTrainer\server ...
+    copy /Y bin\AppMain.exe "%DEP2%\" >nul
+    copy /Y bin\libwebview.dll "%DEP2%\" >nul
+    if exist "%DEP2%\AppCore.ico" if exist bin\IconStamp.exe bin\IconStamp.exe "%DEP2%\AppMain.exe" "%DEP2%\AppCore.ico"
+) else (
+    echo Skip - not found: %DEP2%
+)
+
+if exist "%DEP3%\" (
+    echo Deploying to MindWaveCore\server ...
+    copy /Y bin\AppMain.exe "%DEP3%\" >nul
+    copy /Y bin\libwebview.dll "%DEP3%\" >nul
+    if exist "%DEP3%\AppCore.ico" if exist bin\IconStamp.exe bin\IconStamp.exe "%DEP3%\AppMain.exe" "%DEP3%\AppCore.ico"
+) else (
+    echo Skip - not found: %DEP3%
 )
 
 popd
