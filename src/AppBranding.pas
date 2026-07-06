@@ -25,14 +25,42 @@ procedure loadBranding(out aTitle: string; out aIconBig, aIconSmall: HICON);
 procedure applyWindowIcons(aWnd: HWND; aIconBig, aIconSmall: HICON);
 function appUserModelId(const aTitle: string): string;
 procedure setAppUserModelId(const aTitle: string);
+procedure setWindowTaskbarIdentity(aWnd: HWND; const aAumid, aDisplayName, aIconResource: string);
 
 implementation
 
 uses
-    SysUtils, base64;
+    SysUtils, ActiveX, base64;
 
 function SetCurrentProcessExplicitAppUserModelID(aAppId: PWideChar): HResult; stdcall;
     external 'shell32' name 'SetCurrentProcessExplicitAppUserModelID';
+
+// Registers a taskbar identity on the window's property store so the button shows a proper
+// name + icon instead of falling back to the exe filename ("AppMain.exe").
+type
+    TPropertyKey = record
+        fmtid: TGUID;
+        pid: DWORD;
+    end;
+
+    IPropertyStore = interface(IUnknown)
+        ['{886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99}']
+        function GetCount(out aCount: DWORD): HResult; stdcall;
+        function GetAt(aProp: DWORD; out aKey: TPropertyKey): HResult; stdcall;
+        function GetValue(const aKey: TPropertyKey; out aValue: TPropVariant): HResult; stdcall;
+        function SetValue(const aKey: TPropertyKey; const aValue: TPropVariant): HResult; stdcall;
+        function Commit(): HResult; stdcall;
+    end;
+
+const
+    IID_IPropertyStore: TGUID = '{886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99}';
+    FMTID_AppUserModel: TGUID = '{9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3}';
+    PID_AUMID          = 5;   // PKEY_AppUserModel_ID
+    PID_RELAUNCH_NAME  = 4;   // PKEY_AppUserModel_RelaunchDisplayNameResource
+    PID_RELAUNCH_ICON  = 8;   // PKEY_AppUserModel_RelaunchIconResource
+
+function SHGetPropertyStoreForWindow(aWnd: HWND; const aRiid: TGUID; out aPpv): HResult; stdcall;
+    external 'shell32' name 'SHGetPropertyStoreForWindow';
 
 {*******************************************************************************
 * readFileUtf8 — reads aPath as raw bytes, strips a UTF-8 BOM, returns UTF-16.
@@ -190,8 +218,9 @@ var
     c: Char;
     id: string;
     i: Integer;
+    h: LongWord;
+    p: UnicodeString;
 begin
-    Result := '';
     id := '';
     for i := 1 to Length(aTitle) do
     begin
@@ -200,8 +229,20 @@ begin
             or ((c >= '0') and (c <= '9')) then
             id := id + c;
     end;
-    if id <> '' then
-        Result := 'KK.AppCore.' + id;
+    if id = '' then
+    begin
+        // A purely non-ASCII title (e.g. Cyrillic "Логопед") yields no id; fall back to an
+        // FNV-1a hash of the exe path so each deployment still gets a stable, unique AUMID.
+        p := LowerCase(UnicodeString(ParamStr(0)));
+        h := LongWord(2166136261);
+        for i := 1 to Length(p) do
+        begin
+            h := h xor LongWord(Ord(p[i]));
+            h := h * LongWord(16777619);
+        end;
+        id := 'D' + IntToHex(h, 8);
+    end;
+    Result := 'KK.AppCore.' + id;
 end;
 
 {*******************************************************************************
@@ -215,6 +256,53 @@ begin
     id := appUserModelId(aTitle);
     if id <> '' then
         SetCurrentProcessExplicitAppUserModelID(PWideChar(UnicodeString(id)));
+end;
+
+{*******************************************************************************
+* setStoreString — sets a string (VT_LPWSTR) property on aStore. Builds the PROPVARIANT
+* by hand (CoTaskMemAlloc'd wide string); avoids InitPropVariantFromString, which is not
+* a stable propsys.dll export on all Windows versions.
+*******************************************************************************}
+procedure setStoreString(const aStore: IPropertyStore; aPid: DWORD; const aValue: string);
+var
+    ws: UnicodeString;
+    pv: TPropVariant;
+    key: TPropertyKey;
+    bytes: Integer;
+begin
+    if aValue = '' then
+        Exit;
+    key.fmtid := FMTID_AppUserModel;
+    key.pid := aPid;
+    ws := UnicodeString(aValue);
+    FillChar(pv, SizeOf(pv), 0);
+    pv.vt := VT_LPWSTR;
+    bytes := (Length(ws) + 1) * SizeOf(WideChar);
+    pv.pwszVal := PWideChar(CoTaskMemAlloc(bytes));
+    if pv.pwszVal = nil then
+        Exit;
+    Move(PWideChar(ws)^, pv.pwszVal^, bytes);
+    aStore.SetValue(key, pv);     // the store copies the value
+    CoTaskMemFree(pv.pwszVal);
+end;
+
+{*******************************************************************************
+* setWindowTaskbarIdentity — registers the window's taskbar identity: AUMID + display
+* name + icon resource, so the button shows aDisplayName + the icon rather than the exe
+* filename. aIconResource is "path,index" (no quotes), e.g. the exe with its embedded icon.
+*******************************************************************************}
+procedure setWindowTaskbarIdentity(aWnd: HWND; const aAumid, aDisplayName, aIconResource: string);
+var
+    store: IPropertyStore;
+begin
+    if (aWnd = 0) or (aAumid = '') then
+        Exit;
+    if (SHGetPropertyStoreForWindow(aWnd, IID_IPropertyStore, store) <> S_OK) or (store = nil) then
+        Exit;
+    setStoreString(store, PID_AUMID, aAumid);
+    setStoreString(store, PID_RELAUNCH_NAME, aDisplayName);
+    setStoreString(store, PID_RELAUNCH_ICON, aIconResource);
+    store.Commit;
 end;
 
 end.

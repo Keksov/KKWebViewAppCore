@@ -461,13 +461,9 @@ begin
     profMark('dpi-aware');
 
     // Per-deployment title/icon (AppCore.ico / AppCore.ini next to the exe) so the
-    // taskbar buttons are distinguishable. We deliberately do NOT set an explicit
-    // AppUserModelID: a custom AUMID without an installed shortcut makes the taskbar
-    // BUTTON fall back to the exe name ("AppMain") and a blank icon, while the window's
-    // title/icon only show in the thumbnail. With no explicit AUMID the button uses the
-    // window title + WM_SETICON icon (as the Cyrillic-titled deployments already do), and
-    // per-deployment exe paths + stamped icons keep the buttons distinct.
+    // taskbar buttons are distinguishable. The AUMID must be set before any window exists.
     loadBranding(brandTitle, brandIconBig, brandIconSmall);
+    setAppUserModelId(brandTitle);
 
     SetExceptionMask([exInvalidOp, exDenormalized, exZeroDivide,
                       exOverflow, exUnderflow, exPrecision]);
@@ -583,6 +579,10 @@ begin
     else
         webview_set_title(w, PAnsiChar(toUtf8('AppCore')));
     applyWindowIcons(wnd, brandIconBig, brandIconSmall);
+    // Register the window's taskbar identity so the button shows the deployment name + icon
+    // instead of the exe filename ("AppMain.exe"): AUMID + display name + icon resource
+    // (the exe's own stamped icon, index 0).
+    setWindowTaskbarIdentity(wnd, appUserModelId(brandTitle), brandTitle, ParamStr(0) + ',0');
 
     // The webview library shows the window once, at a default size, via a queued
     // set_size (engine_base dispatch_size_default) that runs on the first
