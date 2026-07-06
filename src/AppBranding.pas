@@ -61,8 +61,6 @@ const
 
 function SHGetPropertyStoreForWindow(aWnd: HWND; const aRiid: TGUID; out aPpv): HResult; stdcall;
     external 'shell32' name 'SHGetPropertyStoreForWindow';
-function InitPropVariantFromString(aPsz: PWideChar; out aPropvar: TPropVariant): HResult; stdcall;
-    external 'propsys' name 'InitPropVariantFromString';
 
 {*******************************************************************************
 * readFileUtf8 — reads aPath as raw bytes, strips a UTF-8 BOM, returns UTF-16.
@@ -248,6 +246,29 @@ begin
 end;
 
 {*******************************************************************************
+* setStoreString — sets a string (VT_LPWSTR) property on aStore. Builds the PROPVARIANT
+* by hand (CoTaskMemAlloc'd wide string) rather than via InitPropVariantFromString, which
+* is not a stable propsys.dll export on all Windows versions.
+*******************************************************************************}
+procedure setStoreString(const aStore: IPropertyStore; const aKey: TPropertyKey; const aValue: string);
+var
+    ws: UnicodeString;
+    pv: TPropVariant;
+    bytes: Integer;
+begin
+    ws := UnicodeString(aValue);
+    FillChar(pv, SizeOf(pv), 0);
+    pv.vt := VT_LPWSTR;
+    bytes := (Length(ws) + 1) * SizeOf(WideChar);
+    pv.pwszVal := PWideChar(CoTaskMemAlloc(bytes));
+    if pv.pwszVal = nil then
+        Exit;
+    Move(PWideChar(ws)^, pv.pwszVal^, bytes);
+    aStore.SetValue(aKey, pv);    // the store copies the value
+    CoTaskMemFree(pv.pwszVal);
+end;
+
+{*******************************************************************************
 * setWindowTaskbarIdentity — stamps the AUMID and a RelaunchIconResource onto the
 * window's property store, so the taskbar button for a custom AUMID (with no installed
 * shortcut) shows the given icon instead of a blank one. aIconResource is "path,index"
@@ -258,7 +279,6 @@ var
     store: IPropertyStore;
     keyId: TPropertyKey;
     keyIcon: TPropertyKey;
-    pv: TPropVariant;
 begin
     if (aWnd = 0) or (aAumid = '') then
         Exit;
@@ -268,11 +288,9 @@ begin
     keyId.pid := PID_AUMID;
     keyIcon.fmtid := FMTID_AppUserModel;
     keyIcon.pid := PID_RELAUNCH_ICON;
-    if InitPropVariantFromString(PWideChar(UnicodeString(aAumid)), pv) = S_OK then
-        store.SetValue(keyId, pv);
-    if (aIconResource <> '')
-        and (InitPropVariantFromString(PWideChar(UnicodeString(aIconResource)), pv) = S_OK) then
-        store.SetValue(keyIcon, pv);
+    setStoreString(store, keyId, aAumid);
+    if aIconResource <> '' then
+        setStoreString(store, keyIcon, aIconResource);
     store.Commit;
 end;
 
