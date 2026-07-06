@@ -66,13 +66,16 @@ end;
 
 {*******************************************************************************
 * applyNormalStyle
-* Swaps aWnd to a standard OS-decorated window frame. The caller then positions and
-* shows it via AppWindowState.applyNormalPlacement (which honours the saved normal/
-* maximized state).
+* Swaps aWnd to a standard OS-decorated window frame and marks it WS_EX_APPWINDOW so the
+* taskbar button represents THIS window (its title + WM_SETICON icon) rather than the
+* process identity (which otherwise shows the exe name "AppMain" and a blank icon). The
+* caller then positions and shows it via AppWindowState.applyNormalPlacement.
 *******************************************************************************}
 procedure applyNormalStyle(aWnd: HWND);
 begin
     SetWindowLongW(aWnd, GWL_STYLE, Integer(WS_OVERLAPPEDWINDOW or WS_VISIBLE));
+    SetWindowLongW(aWnd, GWL_EXSTYLE,
+        GetWindowLongW(aWnd, GWL_EXSTYLE) or Integer(WS_EX_APPWINDOW));
     SetWindowPos(aWnd, 0, 0, 0, 0, 0,
         SWP_FRAMECHANGED or SWP_NOMOVE or SWP_NOSIZE or SWP_NOZORDER or SWP_NOACTIVATE);
 end;
