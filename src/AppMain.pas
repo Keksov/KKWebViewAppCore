@@ -311,6 +311,10 @@ begin
     end
     else
     begin
+        // Apply the full OS-decorated style so a Normal-mode START (dispmode=normal) has the
+        // same chrome as a runtime switch: WS_OVERLAPPEDWINDOW brings WS_SYSMENU, which the
+        // title-bar icon and the system menu both require (without it neither appears).
+        applyNormalStyle(gMainWnd);
         ShowWindow(gMainWnd, restoredShowCmd);
         addSystemMenuItems(gMainWnd);     // Normal at startup: add the toggle/DevTools items
     end;
