@@ -104,6 +104,26 @@ left/right arrows "Лево-Право", SoundTrainer = teal equalizer "Лого
 MindWaveCore = violet sine wave "MindWave" — swap the `.ico` / edit `AppTitle`
 per deployment.
 
+### EXE file icon (IconStamp)
+
+`AppBranding` only sets the **window/taskbar** icon at runtime (`WM_SETICON`); the
+**.exe file** icon (Explorer, pinned shortcuts, the moment before the window shows)
+must be embedded into the PE. Since one generic `AppMain.exe` is built and copied to
+several deployments, the per-deployment icon is stamped **after** copying:
+
+- `src/IconStamp.pas` → `build_iconstamp.bat` builds `bin/IconStamp.exe` (one-time,
+  like `build_webview.bat`). It writes the `.ico` as `RT_ICON` + one `RT_GROUP_ICON`
+  via `BeginUpdateResource`/`UpdateResource`.
+- **Overlay-safe:** FPC appends a ~1 MB symbol overlay after the PE sections, which
+  `UpdateResource` would strip — so IconStamp captures the overlay first and
+  re-appends it (byte-identical, EOF-relative) after stamping.
+- `deploy_to <target-server-dir>` copies `AppMain.exe` + `libwebview.dll` into a
+  deployment and stamps `AppMain.exe` with that dir's `AppCore.ico` in one step.
+  `build_app.bat` also auto-stamps the `KKLeftRight` deploy when `IconStamp.exe` and
+  `AppCore.ico` are present.
+- Manual form: `bin\IconStamp.exe <target.exe> <icon.ico>`. The exe must not be
+  running. `.ico`s are per-deployment binaries and are **not committed**.
+
 ## Config
 
 FPC config: `build\win_x64\fpc-x64.cfg`

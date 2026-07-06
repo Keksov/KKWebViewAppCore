@@ -61,6 +61,11 @@ if exist "%DEPLOY_DIR%\" (
     echo Deploying artifacts to KKLeftRight\server...
     copy /Y bin\AppMain.exe "%DEPLOY_DIR%\" >nul
     copy /Y bin\libwebview.dll "%DEPLOY_DIR%\" >nul
+    rem Stamp the deployment's icon into the copied exe (overlay-safe), if available.
+    if exist "%DEPLOY_DIR%\AppCore.ico" if exist bin\IconStamp.exe (
+        echo Stamping deploy icon...
+        bin\IconStamp.exe "%DEPLOY_DIR%\AppMain.exe" "%DEPLOY_DIR%\AppCore.ico"
+    )
 ) else (
     echo WARNING: deploy target not found, skipping: %DEPLOY_DIR%
 )
