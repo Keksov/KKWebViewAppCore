@@ -23,15 +23,46 @@ uses
 
 procedure loadBranding(out aTitle: string; out aIconBig, aIconSmall: HICON);
 procedure applyWindowIcons(aWnd: HWND; aIconBig, aIconSmall: HICON);
+function appUserModelId(const aTitle: string): string;
 procedure setAppUserModelId(const aTitle: string);
+procedure setWindowTaskbarIdentity(aWnd: HWND; const aAumid, aIconResource: string);
 
 implementation
 
 uses
-    SysUtils, base64;
+    SysUtils, ActiveX, base64;
 
 function SetCurrentProcessExplicitAppUserModelID(aAppId: PWideChar): HResult; stdcall;
     external 'shell32' name 'SetCurrentProcessExplicitAppUserModelID';
+
+// Per-window taskbar identity: with an explicit process AppUserModelID that has no
+// installed shortcut, the taskbar button shows a blank icon unless the window's property
+// store also carries the AUMID + a RelaunchIconResource pointing at an icon.
+type
+    TPropertyKey = record
+        fmtid: TGUID;
+        pid: DWORD;
+    end;
+
+    IPropertyStore = interface(IUnknown)
+        ['{886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99}']
+        function GetCount(out aCount: DWORD): HResult; stdcall;
+        function GetAt(aProp: DWORD; out aKey: TPropertyKey): HResult; stdcall;
+        function GetValue(const aKey: TPropertyKey; out aValue: TPropVariant): HResult; stdcall;
+        function SetValue(const aKey: TPropertyKey; const aValue: TPropVariant): HResult; stdcall;
+        function Commit(): HResult; stdcall;
+    end;
+
+const
+    IID_IPropertyStore: TGUID = '{886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99}';
+    FMTID_AppUserModel: TGUID = '{9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3}';
+    PID_AUMID              = 5;   // PKEY_AppUserModel_ID
+    PID_RELAUNCH_ICON      = 8;   // PKEY_AppUserModel_RelaunchIconResource
+
+function SHGetPropertyStoreForWindow(aWnd: HWND; const aRiid: TGUID; out aPpv): HResult; stdcall;
+    external 'shell32' name 'SHGetPropertyStoreForWindow';
+function InitPropVariantFromString(aPsz: PWideChar; out aPropvar: TPropVariant): HResult; stdcall;
+    external 'propsys' name 'InitPropVariantFromString';
 
 {*******************************************************************************
 * readFileUtf8 — reads aPath as raw bytes, strips a UTF-8 BOM, returns UTF-16.
@@ -181,15 +212,16 @@ begin
 end;
 
 {*******************************************************************************
-* setAppUserModelId — gives the process its own taskbar identity, derived from
-* the title (ASCII alphanumerics). No-op when the title yields no usable id.
+* appUserModelId — the AppUserModelID derived from the title (ASCII alphanumerics),
+* or '' when the title yields no usable id (e.g. a purely Cyrillic title).
 *******************************************************************************}
-procedure setAppUserModelId(const aTitle: string);
+function appUserModelId(const aTitle: string): string;
 var
+    c: Char;
     id: string;
     i: Integer;
-    c: Char;
 begin
+    Result := '';
     id := '';
     for i := 1 to Length(aTitle) do
     begin
@@ -198,9 +230,50 @@ begin
             or ((c >= '0') and (c <= '9')) then
             id := id + c;
     end;
-    if id = '' then
+    if id <> '' then
+        Result := 'KK.AppCore.' + id;
+end;
+
+{*******************************************************************************
+* setAppUserModelId — gives the process its own taskbar identity. No-op when the
+* title yields no usable id.
+*******************************************************************************}
+procedure setAppUserModelId(const aTitle: string);
+var
+    id: string;
+begin
+    id := appUserModelId(aTitle);
+    if id <> '' then
+        SetCurrentProcessExplicitAppUserModelID(PWideChar(UnicodeString(id)));
+end;
+
+{*******************************************************************************
+* setWindowTaskbarIdentity — stamps the AUMID and a RelaunchIconResource onto the
+* window's property store, so the taskbar button for a custom AUMID (with no installed
+* shortcut) shows the given icon instead of a blank one. aIconResource is "path,index"
+* (e.g. the exe with its embedded icon). No-op without a usable AUMID.
+*******************************************************************************}
+procedure setWindowTaskbarIdentity(aWnd: HWND; const aAumid, aIconResource: string);
+var
+    store: IPropertyStore;
+    keyId: TPropertyKey;
+    keyIcon: TPropertyKey;
+    pv: TPropVariant;
+begin
+    if (aWnd = 0) or (aAumid = '') then
         Exit;
-    SetCurrentProcessExplicitAppUserModelID(PWideChar(UnicodeString('KK.AppCore.' + id)));
+    if (SHGetPropertyStoreForWindow(aWnd, IID_IPropertyStore, store) <> S_OK) or (store = nil) then
+        Exit;
+    keyId.fmtid := FMTID_AppUserModel;
+    keyId.pid := PID_AUMID;
+    keyIcon.fmtid := FMTID_AppUserModel;
+    keyIcon.pid := PID_RELAUNCH_ICON;
+    if InitPropVariantFromString(PWideChar(UnicodeString(aAumid)), pv) = S_OK then
+        store.SetValue(keyId, pv);
+    if (aIconResource <> '')
+        and (InitPropVariantFromString(PWideChar(UnicodeString(aIconResource)), pv) = S_OK) then
+        store.SetValue(keyIcon, pv);
+    store.Commit;
 end;
 
 end.

@@ -580,6 +580,9 @@ begin
     else
         webview_set_title(w, PAnsiChar(toUtf8('AppCore')));
     applyWindowIcons(wnd, brandIconBig, brandIconSmall);
+    // With a custom AUMID the taskbar keys the button to it; point it at the exe's own
+    // (stamped) icon so the button is not blank when no shortcut is installed.
+    setWindowTaskbarIdentity(wnd, appUserModelId(brandTitle), '"' + ParamStr(0) + '",0');
 
     // The webview library shows the window once, at a default size, via a queued
     // set_size (engine_base dispatch_size_default) that runs on the first
