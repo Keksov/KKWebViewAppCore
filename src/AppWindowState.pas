@@ -25,6 +25,9 @@ type
   Pieces:
     dispmode=<kiosk|normal>              - the display mode, restored across runs (WN1.1)
     win=<left top right bottom showCmd>  - normal windowed geometry + maximized state
+    winmon=<left top right bottom>       - work area of the monitor the Normal window was
+                                           on, so the geometry can be remapped when the
+                                           display config changed (monitor gone / resized)
     kioskfull=<0|1>                      - fullscreen(1) / restored(0) for kiosk mode
 
   Windowed/Normal: attachWindowState restores the geometry and tracks changes (subclassing
@@ -42,6 +45,15 @@ procedure setTrackMode(aMode: TWindowMode);
 procedure setKioskDragEndHandler(aProc: TKioskDragEndProc);
 procedure setSysCommandHandler(aProc: TSysCommandProc);
 procedure applyNormalPlacement(aWnd: HWND);
+
+{ Remaps a saved Normal window rect onto the target monitor's work area when the display
+  config changed (e.g. the monitor is gone / a different resolution). Pure geometry, so it
+  is unit-testable. aSavedMon is the work area of the monitor the window was on (an empty
+  rect means unknown). Policy: target >= source -> preserve the edge margins (window grows,
+  so a near-maximized window stays near-maximized on a bigger screen); target < source ->
+  keep the size if it still fits, else fill the target work area. Maximized/fullscreen state
+  is applied by the caller on top of the returned rect. }
+function remapNormalRect(const aSavedWin, aSavedMon, aTargetWork: TRect): TRect;
 procedure saveDispMode(const aMode: string);
 function loadDispMode(out aMode: string): Boolean;
 procedure saveKioskFull(aFull: Boolean);
@@ -54,14 +66,17 @@ function loadKioskMon(out aLeft, aTop, aRight, aBottom: Integer): Boolean;
 implementation
 
 uses
-    SysUtils;
+    SysUtils, Math, AppMonitors;
 
 const
     STATE_NAME = 'AppCore.window';
+    MIN_W = 320;                           // never restore a window smaller than this
+    MIN_H = 240;
 
 var
     gOrigProc: LONG_PTR = 0;              // subclassed window's original WndProc
     gLastGeom: string = '';               // latest "left top right bottom showCmd"
+    gLastMon: string = '';                // work area of the window's monitor "l t r b"
     gShowCmd: Integer = SW_SHOWNORMAL;     // how to show once ready (normal/maximized)
     gTrackMode: TWindowMode = wmKiosk;     // which mode the tracker records geometry for
     gKioskDragEnd: TKioskDragEndProc = nil; // AppBar's kiosk drag/resize-end handler
@@ -279,18 +294,215 @@ begin
 end;
 
 {*******************************************************************************
-* onScreen — True when aRect overlaps the virtual screen (all monitors).
+* mkRect — a TRect from its four edges.
 *******************************************************************************}
-function onScreen(const aRect: TRect): Boolean;
-var
-    screen: TRect;
-    dummy: TRect;
+function mkRect(aL, aT, aR, aB: Integer): TRect;
 begin
-    screen.Left := GetSystemMetrics(SM_XVIRTUALSCREEN);
-    screen.Top := GetSystemMetrics(SM_YVIRTUALSCREEN);
-    screen.Right := screen.Left + GetSystemMetrics(SM_CXVIRTUALSCREEN);
-    screen.Bottom := screen.Top + GetSystemMetrics(SM_CYVIRTUALSCREEN);
-    Result := IntersectRect(dummy, aRect, screen);
+    Result.Left := aL;
+    Result.Top := aT;
+    Result.Right := aR;
+    Result.Bottom := aB;
+end;
+
+{*******************************************************************************
+* parseRect — parses "l t r b" into aRect. False when malformed.
+*******************************************************************************}
+function parseRect(const aStr: string; out aRect: TRect): Boolean;
+var
+    s: string;
+    l, t, r, b: Integer;
+begin
+    s := Trim(aStr);
+    Result := nextInt(s, l) and nextInt(s, t) and nextInt(s, r) and nextInt(s, b);
+    if Result then
+    begin
+        aRect.Left := l;
+        aRect.Top := t;
+        aRect.Right := r;
+        aRect.Bottom := b;
+    end;
+end;
+
+{*******************************************************************************
+* fullyWithin — True when aInner lies entirely inside aOuter.
+*******************************************************************************}
+function fullyWithin(const aInner, aOuter: TRect): Boolean;
+begin
+    Result := (aInner.Left >= aOuter.Left) and (aInner.Top >= aOuter.Top)
+        and (aInner.Right <= aOuter.Right) and (aInner.Bottom <= aOuter.Bottom);
+end;
+
+{*******************************************************************************
+* clampRect — fits aRect inside aWork: cap the size to the work area (min MIN_W/H) and
+* shift it fully on-screen.
+*******************************************************************************}
+procedure clampRect(var aRect: TRect; const aWork: TRect);
+var
+    w, h, workW, workH: Integer;
+begin
+    workW := aWork.Right - aWork.Left;
+    workH := aWork.Bottom - aWork.Top;
+    w := Min(Max(aRect.Right - aRect.Left, Min(MIN_W, workW)), workW);
+    h := Min(Max(aRect.Bottom - aRect.Top, Min(MIN_H, workH)), workH);
+    if aRect.Left + w > aWork.Right then
+        aRect.Left := aWork.Right - w;
+    if aRect.Top + h > aWork.Bottom then
+        aRect.Top := aWork.Bottom - h;
+    if aRect.Left < aWork.Left then
+        aRect.Left := aWork.Left;
+    if aRect.Top < aWork.Top then
+        aRect.Top := aWork.Top;
+    aRect.Right := aRect.Left + w;
+    aRect.Bottom := aRect.Top + h;
+end;
+
+{*******************************************************************************
+* remapNormalRect — see the interface comment. Pure geometry.
+*******************************************************************************}
+function remapNormalRect(const aSavedWin, aSavedMon, aTargetWork: TRect): TRect;
+var
+    winW, winH, tW, tH, sW, sH: Integer;
+    hasSrc: Boolean;
+    r: TRect;
+begin
+    winW := aSavedWin.Right - aSavedWin.Left;
+    winH := aSavedWin.Bottom - aSavedWin.Top;
+    tW := aTargetWork.Right - aTargetWork.Left;
+    tH := aTargetWork.Bottom - aTargetWork.Top;
+    sW := aSavedMon.Right - aSavedMon.Left;
+    sH := aSavedMon.Bottom - aSavedMon.Top;
+    hasSrc := (sW > 0) and (sH > 0);
+
+    if hasSrc and (tW >= sW) and (tH >= sH) then
+    begin
+        // Target monitor >= source: preserve the distance to each edge (the window grows,
+        // so a near-maximized window stays near-maximized on a bigger screen).
+        r.Left := aTargetWork.Left + Max(0, aSavedWin.Left - aSavedMon.Left);
+        r.Top := aTargetWork.Top + Max(0, aSavedWin.Top - aSavedMon.Top);
+        r.Right := aTargetWork.Right - Max(0, aSavedMon.Right - aSavedWin.Right);
+        r.Bottom := aTargetWork.Bottom - Max(0, aSavedMon.Bottom - aSavedWin.Bottom);
+    end
+    else if (winW <= tW) and (winH <= tH) then
+    begin
+        // Smaller (or unknown) target, window still fits: keep the size. Preserve the
+        // relative top-left offset when the source is known, else centre it.
+        if hasSrc then
+        begin
+            r.Left := aTargetWork.Left + Round((aSavedWin.Left - aSavedMon.Left) / sW * tW);
+            r.Top := aTargetWork.Top + Round((aSavedWin.Top - aSavedMon.Top) / sH * tH);
+        end
+        else
+        begin
+            r.Left := aTargetWork.Left + (tW - winW) div 2;
+            r.Top := aTargetWork.Top + (tH - winH) div 2;
+        end;
+        r.Right := r.Left + winW;
+        r.Bottom := r.Top + winH;
+    end
+    else
+        // Window does not fit the smaller target: fill its work area (stay Normal).
+        r := aTargetWork;
+
+    clampRect(r, aTargetWork);
+    Result := r;
+end;
+
+{*******************************************************************************
+* readSavedNormal — reads win= (rect + showCmd) and winmon= (monitor work area, empty
+* rect when absent). False when there is no valid saved geometry.
+*******************************************************************************}
+function readSavedNormal(out aWin, aMon: TRect; out aShowCmd: Integer): Boolean;
+var
+    rest, monRest: string;
+    l, t, r, b: Integer;
+begin
+    Result := False;
+    aShowCmd := SW_SHOWNORMAL;
+    aMon := mkRect(0, 0, 0, 0);
+    if not readValue('win', rest) then
+        Exit;
+    if not (nextInt(rest, l) and nextInt(rest, t) and nextInt(rest, r) and nextInt(rest, b)
+            and nextInt(rest, aShowCmd)) then
+        Exit;
+    aWin.Left := l;
+    aWin.Top := t;
+    aWin.Right := r;
+    aWin.Bottom := b;
+    if (aWin.Right - aWin.Left <= 0) or (aWin.Bottom - aWin.Top <= 0) then
+        Exit;
+    if readValue('winmon', monRest) then
+        parseRect(monRest, aMon);
+    Result := True;
+end;
+
+{*******************************************************************************
+* monitorWorkString — "l t r b" of the work area of aWnd's monitor.
+*******************************************************************************}
+function monitorWorkString(aWnd: HWND): string;
+var
+    r: TRect;
+begin
+    r := monitorWorkAreaForWindow(aWnd);
+    Result := Format('%d %d %d %d', [r.Left, r.Top, r.Right, r.Bottom]);
+end;
+
+{*******************************************************************************
+* normalTarget — resolves where a saved Normal window should go now: the exact saved rect
+* if its monitor is unchanged, else the remap onto the nearest current monitor.
+*******************************************************************************}
+function normalTarget(const aSavedWin, aSavedMon: TRect): TRect;
+var
+    work: TRect;
+    noMon: Boolean;
+begin
+    work := monitorWorkAreaForRect(aSavedWin);
+    noMon := aSavedMon.Right <= aSavedMon.Left;   // no winmon saved (pre-upgrade state)
+    if rectsEqual(aSavedMon, work) then
+        Result := aSavedWin                        // same monitor, unchanged
+    else if noMon and fullyWithin(aSavedWin, work) then
+        Result := aSavedWin                        // unknown monitor but still fully on-screen
+    else
+        Result := remapNormalRect(aSavedWin, aSavedMon, work);
+end;
+
+{*******************************************************************************
+* handleDisplayChange — on a runtime monitor change (WM_DISPLAYCHANGE), if the Normal
+* window is now off its monitor / no longer fits, remap it onto the nearest current one
+* (preserving maximized state), using the last-tracked monitor as the source.
+*******************************************************************************}
+procedure handleDisplayChange(aWnd: HWND);
+var
+    savedMon, cur, work, target: TRect;
+    wp: TWindowPlacement;
+    maximized: Boolean;
+begin
+    if (aWnd = 0) or IsIconic(aWnd) then
+        Exit;
+    FillChar(wp, SizeOf(wp), 0);
+    wp.length := SizeOf(wp);
+    if not GetWindowPlacement(aWnd, @wp) then
+        Exit;
+    maximized := wp.showCmd = SW_SHOWMAXIMIZED;
+    cur := wp.rcNormalPosition;
+    work := monitorWorkAreaForRect(cur);
+    if fullyWithin(cur, work) and (not maximized) then
+    begin
+        gLastMon := monitorWorkString(aWnd);   // still fine; just refresh the tracked monitor
+        Exit;
+    end;
+    if not parseRect(gLastMon, savedMon) then
+        savedMon := mkRect(0, 0, 0, 0);
+    target := remapNormalRect(cur, savedMon, work);
+    FillChar(wp, SizeOf(wp), 0);
+    wp.length := SizeOf(wp);
+    wp.rcNormalPosition := target;
+    if maximized then
+        wp.showCmd := SW_SHOWMAXIMIZED
+    else
+        wp.showCmd := SW_SHOWNORMAL;
+    SetWindowPlacement(aWnd, @wp);
+    gLastGeom := placementString(aWnd);
+    gLastMon := monitorWorkString(aWnd);
 end;
 
 {*******************************************************************************
@@ -298,32 +510,22 @@ end;
 *******************************************************************************}
 procedure restoreWindowState(aWnd: HWND);
 var
-    rest: string;
-    left, top, right, bottom, showCmd: Integer;
+    savedWin, savedMon: TRect;
+    showCmd: Integer;
     wp: TWindowPlacement;
-    r: TRect;
 begin
-    if not readValue('win', rest) then
+    if not readSavedNormal(savedWin, savedMon, showCmd) then
         Exit;
-    if not (nextInt(rest, left) and nextInt(rest, top) and nextInt(rest, right)
-            and nextInt(rest, bottom) and nextInt(rest, showCmd)) then
-        Exit;
-    r.Left := left;
-    r.Top := top;
-    r.Right := right;
-    r.Bottom := bottom;
-    if (r.Right - r.Left <= 0) or (r.Bottom - r.Top <= 0) or (not onScreen(r)) then
-        Exit;
-    FillChar(wp, SizeOf(wp), 0);
-    wp.length := SizeOf(wp);
-    wp.rcNormalPosition := r;
-    // Position the window but keep it HIDDEN — it is revealed later, in one step,
-    // at the correct place/state (no empty-window flash during startup). The
-    // intended show state is remembered for restoredShowCmd.
     if showCmd = SW_SHOWMAXIMIZED then
         gShowCmd := SW_SHOWMAXIMIZED
     else
         gShowCmd := SW_SHOWNORMAL;
+    FillChar(wp, SizeOf(wp), 0);
+    wp.length := SizeOf(wp);
+    // Remap onto whatever monitor exists now (the saved one may be gone / a different
+    // resolution). Keep it HIDDEN — it is revealed later at the right place/state, and a
+    // maximized window maximizes on the monitor holding rcNormalPosition.
+    wp.rcNormalPosition := normalTarget(savedWin, savedMon);
     wp.showCmd := SW_HIDE;
     SetWindowPlacement(aWnd, @wp);
 end;
@@ -335,6 +537,8 @@ procedure writeGeom();
 begin
     if gLastGeom <> '' then
         setStateValue('win', gLastGeom);
+    if gLastMon <> '' then
+        setStateValue('winmon', gLastMon);
 end;
 
 {*******************************************************************************
@@ -359,37 +563,27 @@ end;
 *******************************************************************************}
 procedure applyNormalPlacement(aWnd: HWND);
 var
-    rest: string;
-    left, top, right, bottom, showCmd: Integer;
+    savedWin, savedMon, target: TRect;
+    showCmd: Integer;
     wp: TWindowPlacement;
-    r: TRect;
 begin
-    showCmd := SW_SHOWNORMAL;
-    if readValue('win', rest)
-        and nextInt(rest, left) and nextInt(rest, top) and nextInt(rest, right)
-        and nextInt(rest, bottom) and nextInt(rest, showCmd) then
-    begin
-        r.Left := left;
-        r.Top := top;
-        r.Right := right;
-        r.Bottom := bottom;
-    end
+    if readSavedNormal(savedWin, savedMon, showCmd) then
+        target := normalTarget(savedWin, savedMon)
     else
-        centeredDefault(r);
-    if (r.Right - r.Left <= 0) or (r.Bottom - r.Top <= 0) or (not onScreen(r)) then
     begin
-        centeredDefault(r);
+        centeredDefault(target);
         showCmd := SW_SHOWNORMAL;
     end;
     FillChar(wp, SizeOf(wp), 0);
     wp.length := SizeOf(wp);
-    wp.rcNormalPosition := r;
+    wp.rcNormalPosition := target;
     if showCmd = SW_SHOWMAXIMIZED then
         wp.showCmd := SW_SHOWMAXIMIZED
     else
         wp.showCmd := SW_SHOWNORMAL;
     SetWindowPlacement(aWnd, @wp);
     gLastGeom := placementString(aWnd);
+    gLastMon := monitorWorkString(aWnd);
 end;
 
 {*******************************************************************************
@@ -415,11 +609,16 @@ begin
             s := placementString(aWnd);
             if s <> '' then
                 gLastGeom := s;
+            gLastMon := monitorWorkString(aWnd);   // remember which monitor (winmon=)
             if (aMsg = WM_SIZE) and ((aWParam = SIZE_MAXIMIZED) or (aWParam = SIZE_RESTORED)) then
                 writeGeom;
         end
         else if aMsg = WM_EXITSIZEMOVE then
-            writeGeom;
+            writeGeom
+        else if aMsg = WM_DISPLAYCHANGE then
+            // A monitor was (dis)connected / changed resolution while running: re-place the
+            // window onto a valid monitor if it got stranded.
+            handleDisplayChange(aWnd);
     end
     else if aMsg = WM_EXITSIZEMOVE then
     begin
@@ -427,7 +626,10 @@ begin
             gKioskDragEnd()
         else
             saveKioskRect(aWnd);
-    end;
+    end
+    else if (aMsg = WM_DISPLAYCHANGE) and Assigned(gKioskDragEnd) then
+        // Kiosk: a display change while running -> re-fill the (nearest) monitor.
+        gKioskDragEnd();
     Result := CallWindowProcW(TFNWndProc(Pointer(gOrigProc)), aWnd, aMsg, aWParam, aLParam);
 end;
 
@@ -441,6 +643,7 @@ begin
         Exit;
     restoreWindowState(aWnd);
     gLastGeom := placementString(aWnd);
+    gLastMon := monitorWorkString(aWnd);
     setTrackMode(wmNormal);
     installMainTracker(aWnd);
 end;

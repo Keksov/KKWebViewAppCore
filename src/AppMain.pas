@@ -441,7 +441,78 @@ begin
     Result := 0;
 end;
 
+{*******************************************************************************
+* runRemapTest — self-test for AppWindowState.remapNormalRect (the multi-monitor geometry
+* remap). Writes PASS/FAIL per case to %TEMP%\appcore-remap-test.log (the GUI subsystem has
+* no console). Run: AppMain.exe --test-remap
+*******************************************************************************}
+function mkRect(aL, aT, aR, aB: Integer): TRect;
 begin
+    Result.Left := aL;
+    Result.Top := aT;
+    Result.Right := aR;
+    Result.Bottom := aB;
+end;
+
+procedure runRemapTest();
+var
+    log: TextFile;
+    passed, total: Integer;
+    src, tgt, win: TRect;
+
+    procedure check(const aName: string; const aGot, aExp: TRect);
+    var
+        ok: Boolean;
+        verdict: string;
+    begin
+        Inc(total);
+        ok := (aGot.Left = aExp.Left) and (aGot.Top = aExp.Top)
+            and (aGot.Right = aExp.Right) and (aGot.Bottom = aExp.Bottom);
+        if ok then
+        begin
+            Inc(passed);
+            verdict := 'PASS';
+        end
+        else
+            verdict := 'FAIL';
+        Writeln(log, Format('%-24s got (%d,%d,%d,%d) exp (%d,%d,%d,%d)  %s',
+            [aName, aGot.Left, aGot.Top, aGot.Right, aGot.Bottom,
+             aExp.Left, aExp.Top, aExp.Right, aExp.Bottom, verdict]));
+    end;
+
+begin
+    AssignFile(log, IncludeTrailingPathDelimiter(GetTempDir) + 'appcore-remap-test.log');
+    Rewrite(log);
+    passed := 0; total := 0;
+
+    // 1) Near-full on 1280x1024 (10px margins) -> bigger 3840x2160: preserve edge margins.
+    src := mkRect(0, 0, 1280, 1024); win := mkRect(10, 10, 1270, 1014); tgt := mkRect(0, 0, 3840, 2160);
+    check('bigger-preserve-margins', remapNormalRect(win, src, tgt), mkRect(10, 10, 3830, 2150));
+
+    // 2) 800x600 on 1920x1080 -> smaller 1280x1024 (fits): keep size, proportional offset.
+    src := mkRect(0, 0, 1920, 1080); win := mkRect(200, 150, 1000, 750); tgt := mkRect(0, 0, 1280, 1024);
+    check('smaller-fits-keepsize', remapNormalRect(win, src, tgt), mkRect(133, 142, 933, 742));
+
+    // 3) 1600x1000 on 1920x1080 -> smaller 1280x1024 (does not fit): fill the work area.
+    src := mkRect(0, 0, 1920, 1080); win := mkRect(50, 40, 1650, 1040); tgt := mkRect(0, 0, 1280, 1024);
+    check('smaller-nofit-fill', remapNormalRect(win, src, tgt), mkRect(0, 0, 1280, 1024));
+
+    // 4) Unknown source monitor (old saved state), window fits: centre it.
+    src := mkRect(0, 0, 0, 0); win := mkRect(0, 0, 800, 600); tgt := mkRect(0, 0, 1280, 1024);
+    check('nosrc-center', remapNormalRect(win, src, tgt), mkRect(240, 212, 1040, 812));
+
+    Writeln(log, Format('TOTAL: %d/%d passed', [passed, total]));
+    CloseFile(log);
+end;
+
+begin
+    for i := 1 to ParamCount do
+        if SameText(ParamStr(i), '--test-remap') then
+        begin
+            runRemapTest();
+            Halt(0);
+        end;
+
     // Optional startup profiling (enabled as early as possible so the first mark
     // is representative). --profile-splash logs the time-to-splash and exits.
     profileHalt := False;
