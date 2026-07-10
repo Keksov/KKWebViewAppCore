@@ -11,7 +11,8 @@ uses
 
 type
     { Called on the main window's drag/resize end while in kiosk mode, so the AppBar can
-      refill the monitor (fullscreen) or remember the restored rect (WN-D5). }
+      refill the monitor (fullscreen) or remember the restored rect (WN-D5). Also the shape
+      of the kiosk display-change handler. }
     TKioskDragEndProc = procedure();
 
     { Called on WM_SYSCOMMAND with the masked command; returns True if it handled a custom
@@ -24,30 +25,37 @@ type
 
   Pieces:
     dispmode=<kiosk|normal>              - the display mode, restored across runs (WN1.1)
-    mon.<key>.win=<l t r b showCmd>      - Normal geometry + maximized state remembered PER
-    mon.<key>.work=<l t r b>               monitor (key = stable EDID id, AppMonitors); its
-                                           work area detects a resolution change of that
-                                           same monitor
+    mon.<key>.win=<l t r b showCmd>      - the NORMAL rect (screen coordinates, never the
+                                           maximized rect) + 1|3 (normal|maximized),
+                                           remembered PER monitor (key = stable EDID id,
+                                           AppMonitors)
+    mon.<key>.work=<l t r b>             - that monitor's work area at save time, so a
+                                           resolution change of the same monitor is detected
     lastmon=<key>                        - which monitor to open on at startup
     win=/winmon=                         - legacy single-slot geometry (pre-per-monitor);
                                            still read as a fallback for old state files
     kioskfull=<0|1>                      - fullscreen(1) / restored(0) for kiosk mode
 
-  Windowed/Normal: attachWindowState restores the geometry and tracks changes (subclassing
-  the window so state is captured even on X-button close / hard kill); flushWindowState
-  writes on shutdown. Kiosk: saveKioskFull / loadKioskFull persist the AppBar toggle.
-  saveDispMode / loadDispMode persist which mode the app is in (Kiosk vs Normal). }
-{ Restores the saved windowed geometry WITHOUT showing the window (it is revealed
-  later) and starts tracking changes. restoredShowCmd returns how it should be
-  shown once ready: SW_SHOWMAXIMIZED if it was saved maximized, else SW_SHOWNORMAL. }
+  Save model: geometry is CAPTURED into an in-memory cache on settle events (drag/resize
+  end, maximize/restore, monitor arrival) and PERSISTED in one batched file write; saves
+  are suppressed while a modal size/move loop is active (transient rects) and while the app
+  itself applies a placement (begin/endPlacementChange). The exit flush persists the cache,
+  which survives a destroyed (X-close) or minimized window. }
 procedure attachWindowState(aWnd: HWND);
 function restoredShowCmd(): Integer;
 procedure flushWindowState();
 procedure installMainTracker(aWnd: HWND);
 procedure setTrackMode(aMode: TWindowMode);
 procedure setKioskDragEndHandler(aProc: TKioskDragEndProc);
+procedure setKioskDisplayChangeHandler(aProc: TKioskDragEndProc);
 procedure setSysCommandHandler(aProc: TSysCommandProc);
 procedure applyNormalPlacement(aWnd: HWND);
+
+{ Suppress tracker saves while the app itself changes the window placement (mode switch,
+  programmatic re-place), so induced WM_SIZE/WM_WINDOWPOSCHANGED do not persist transient
+  geometry. Nestable. }
+procedure beginPlacementChange();
+procedure endPlacementChange();
 
 { Remaps a saved Normal window rect onto the target monitor's work area when the display
   config changed (e.g. the monitor is gone / a different resolution). Pure geometry, so it
@@ -77,13 +85,27 @@ const
     MIN_H = 240;
 
 var
-    gOrigProc: LONG_PTR = 0;              // subclassed window's original WndProc
+    gOrigProc: LONG_PTR = 0;               // subclassed window's original WndProc
+    gCurMon: HMONITOR = 0;                 // monitor the window was last seen on (arrival detection)
     gTrackedWnd: HWND = 0;                 // the subclassed main window (used by flush)
-    gDragStartKey: string = '';            // monitor key captured at drag start (WM_ENTERSIZEMOVE)
+    gSuppress: Integer = 0;                // >0: the app is applying a placement; don't save
+    gDragStartW: Integer = 0;              // window size at WM_ENTERSIZEMOVE (move vs resize)
+    gDragStartH: Integer = 0;
+    gInSizeMove: Boolean = False;          // inside the modal size/move loop
+    gDragStartKey: string = '';            // monitor key captured at drag start
     gShowCmd: Integer = SW_SHOWNORMAL;     // how to show once ready (normal/maximized)
     gTrackMode: TWindowMode = wmKiosk;     // which mode the tracker records geometry for
     gKioskDragEnd: TKioskDragEndProc = nil; // AppBar's kiosk drag/resize-end handler
+    gKioskDisplay: TKioskDragEndProc = nil; // AppBar's kiosk display-change handler
     gSysCmd: TSysCommandProc = nil;         // custom system-menu command handler (Normal mode)
+
+    // Last-known-good Normal state (screen coordinates). Persisted by the exit flush, so
+    // it must survive a destroyed (X-close) or minimized window.
+    gCacheMax: Boolean = False;            // window was maximized
+    gCacheValid: Boolean = False;
+    gCacheKey: string = '';                // monitor key the state belongs to
+    gCacheRect: TRect;                     // the NORMAL rect (never the maximized rect)
+    gCacheWork: TRect;                     // that monitor's work area at capture time
 
 {*******************************************************************************
 * exePathKey — FNV-1a hash (hex) of the lowercased full exe path; the per-install
@@ -91,9 +113,9 @@ var
 *******************************************************************************}
 function exePathKey(): string;
 var
-    p: UnicodeString;
-    h: LongWord;
     i: Integer;
+    h: LongWord;
+    p: UnicodeString;
 begin
     p := LowerCase(UnicodeString(ParamStr(0)));
     h := LongWord(2166136261);
@@ -105,6 +127,9 @@ begin
     Result := IntToHex(h, 8);
 end;
 
+{*******************************************************************************
+* nearExePath / tempPath — the two candidate state-file locations.
+*******************************************************************************}
 function nearExePath(): string;
 begin
     Result := ExtractFilePath(ParamStr(0)) + STATE_NAME;
@@ -185,10 +210,10 @@ end;
 *******************************************************************************}
 function readValue(const aKey: string; out aValue: string): Boolean;
 var
+    nl: Integer;
     data: string;
     rest: string;
     line: string;
-    nl: Integer;
     prefix: string;
 begin
     Result := False;
@@ -220,18 +245,18 @@ begin
 end;
 
 {*******************************************************************************
-* setStateValue — updates "aKey=aValue" in the state file, preserving other keys.
+* setStateValues — updates several "key=value" pairs in ONE read-modify-write pass,
+* preserving all other keys (a settle event updates three keys; one file rewrite).
 *******************************************************************************}
-procedure setStateValue(const aKey, aValue: string);
+procedure setStateValues(const aKeys, aValues: array of string);
 var
+    i, nl: Integer;
+    keep: Boolean;
     data: string;
     rest: string;
     line: string;
-    prefix: string;
     outData: string;
-    nl: Integer;
 begin
-    prefix := aKey + '=';
     outData := '';
     if readStateFile(data) then
     begin
@@ -249,28 +274,30 @@ begin
                 line := Trim(rest);
                 rest := '';
             end;
-            if (line <> '') and (Copy(line, 1, Length(prefix)) <> prefix) then
+            if line = '' then
+                Continue;
+            keep := True;
+            for i := Low(aKeys) to High(aKeys) do
+                if Copy(line, 1, Length(aKeys[i]) + 1) = aKeys[i] + '=' then
+                begin
+                    keep := False;
+                    Break;
+                end;
+            if keep then
                 outData := outData + line + #13#10;
         end;
     end;
-    outData := outData + prefix + aValue + #13#10;
+    for i := Low(aKeys) to High(aKeys) do
+        outData := outData + aKeys[i] + '=' + aValues[i] + #13#10;
     writeStateFile(outData);
 end;
 
 {*******************************************************************************
-* placementString — "left top right bottom showCmd" for aWnd, or '' on failure.
+* setStateValue — single-key form of setStateValues.
 *******************************************************************************}
-function placementString(aWnd: HWND): string;
-var
-    wp: TWindowPlacement;
+procedure setStateValue(const aKey, aValue: string);
 begin
-    Result := '';
-    FillChar(wp, SizeOf(wp), 0);
-    wp.length := SizeOf(wp);
-    if GetWindowPlacement(aWnd, @wp) then
-        Result := Format('%d %d %d %d %d',
-            [wp.rcNormalPosition.Left, wp.rcNormalPosition.Top,
-             wp.rcNormalPosition.Right, wp.rcNormalPosition.Bottom, Integer(wp.showCmd)]);
+    setStateValues([aKey], [aValue]);
 end;
 
 {*******************************************************************************
@@ -297,17 +324,6 @@ begin
 end;
 
 {*******************************************************************************
-* mkRect — a TRect from its four edges.
-*******************************************************************************}
-function mkRect(aL, aT, aR, aB: Integer): TRect;
-begin
-    Result.Left := aL;
-    Result.Top := aT;
-    Result.Right := aR;
-    Result.Bottom := aB;
-end;
-
-{*******************************************************************************
 * parseRect — parses "l t r b" into aRect. False when malformed.
 *******************************************************************************}
 function parseRect(const aStr: string; out aRect: TRect): Boolean;
@@ -318,12 +334,15 @@ begin
     s := Trim(aStr);
     Result := nextInt(s, l) and nextInt(s, t) and nextInt(s, r) and nextInt(s, b);
     if Result then
-    begin
-        aRect.Left := l;
-        aRect.Top := t;
-        aRect.Right := r;
-        aRect.Bottom := b;
-    end;
+        aRect := mkRect(l, t, r, b);
+end;
+
+{*******************************************************************************
+* rectStr — "l t r b" for aRect.
+*******************************************************************************}
+function rectStr(const aRect: TRect): string;
+begin
+    Result := Format('%d %d %d %d', [aRect.Left, aRect.Top, aRect.Right, aRect.Bottom]);
 end;
 
 {*******************************************************************************
@@ -364,9 +383,9 @@ end;
 *******************************************************************************}
 function remapNormalRect(const aSavedWin, aSavedMon, aTargetWork: TRect): TRect;
 var
-    winW, winH, tW, tH, sW, sH: Integer;
-    hasSrc: Boolean;
     r: TRect;
+    hasSrc: Boolean;
+    winW, winH, tW, tH, sW, sH: Integer;
 begin
     winW := aSavedWin.Right - aSavedWin.Left;
     winH := aSavedWin.Bottom - aSavedWin.Top;
@@ -411,13 +430,13 @@ begin
 end;
 
 {*******************************************************************************
-* readSavedNormal — reads win= (rect + showCmd) and winmon= (monitor work area, empty
-* rect when absent). False when there is no valid saved geometry.
+* readSavedNormal — reads the LEGACY win= (rect + showCmd) and winmon= keys (pre-
+* per-monitor state files). False when there is no valid saved geometry.
 *******************************************************************************}
 function readSavedNormal(out aWin, aMon: TRect; out aShowCmd: Integer): Boolean;
 var
-    rest, monRest: string;
     l, t, r, b: Integer;
+    rest, monRest: string;
 begin
     Result := False;
     aShowCmd := SW_SHOWNORMAL;
@@ -427,10 +446,7 @@ begin
     if not (nextInt(rest, l) and nextInt(rest, t) and nextInt(rest, r) and nextInt(rest, b)
             and nextInt(rest, aShowCmd)) then
         Exit;
-    aWin.Left := l;
-    aWin.Top := t;
-    aWin.Right := r;
-    aWin.Bottom := b;
+    aWin := mkRect(l, t, r, b);
     if (aWin.Right - aWin.Left <= 0) or (aWin.Bottom - aWin.Top <= 0) then
         Exit;
     if readValue('winmon', monRest) then
@@ -439,19 +455,8 @@ begin
 end;
 
 {*******************************************************************************
-* monitorWorkString — "l t r b" of the work area of aWnd's monitor.
-*******************************************************************************}
-function monitorWorkString(aWnd: HWND): string;
-var
-    r: TRect;
-begin
-    r := monitorWorkAreaForWindow(aWnd);
-    Result := Format('%d %d %d %d', [r.Left, r.Top, r.Right, r.Bottom]);
-end;
-
-{*******************************************************************************
-* normalTarget — resolves where a saved Normal window should go now: the exact saved rect
-* if its monitor is unchanged, else the remap onto the nearest current monitor.
+* normalTarget — resolves where a LEGACY saved Normal window should go now: the exact
+* saved rect if its monitor is unchanged, else the remap onto the nearest monitor.
 *******************************************************************************}
 function normalTarget(const aSavedWin, aSavedMon: TRect): TRect;
 var
@@ -469,270 +474,389 @@ begin
 end;
 
 {*******************************************************************************
-* readMonState — reads mon.<key>.win (rect + showCmd) and mon.<key>.work (work area).
-* False when there is no valid saved state for that monitor.
+* readMonState — reads mon.<key>.win (NORMAL rect + maximized flag) and mon.<key>.work
+* (work area at save time). False when there is no valid saved state for that monitor.
 *******************************************************************************}
-function readMonState(const aKey: string; out aWin, aWork: TRect; out aShowCmd: Integer): Boolean;
+function readMonState(const aKey: string; out aWin, aWork: TRect; out aMax: Boolean): Boolean;
 var
     rest: string;
-    l, t, r, b: Integer;
+    l, t, r, b, sc: Integer;
 begin
     Result := False;
-    aShowCmd := SW_SHOWNORMAL;
+    aMax := False;
     aWork := mkRect(0, 0, 0, 0);
     if not readValue('mon.' + aKey + '.win', rest) then
         Exit;
     if not (nextInt(rest, l) and nextInt(rest, t) and nextInt(rest, r) and nextInt(rest, b)
-            and nextInt(rest, aShowCmd)) then
+            and nextInt(rest, sc)) then
         Exit;
     aWin := mkRect(l, t, r, b);
     if (aWin.Right - aWin.Left <= 0) or (aWin.Bottom - aWin.Top <= 0) then
         Exit;
+    aMax := sc = SW_SHOWMAXIMIZED;
     if readValue('mon.' + aKey + '.work', rest) then
         parseRect(rest, aWork);
     Result := True;
 end;
 
 {*******************************************************************************
-* hasMonState — True when a saved state exists for the monitor key.
+* readLastMonState — the state saved for the last-used monitor (lastmon), if any.
 *******************************************************************************}
-function hasMonState(const aKey: string): Boolean;
+function readLastMonState(out aWin, aWork: TRect; out aMax: Boolean): Boolean;
 var
-    dummy: string;
+    lastKey: string;
 begin
-    Result := (aKey <> '') and readValue('mon.' + aKey + '.win', dummy);
+    Result := readValue('lastmon', lastKey)
+        and readMonState(Trim(lastKey), aWin, aWork, aMax);
 end;
 
 {*******************************************************************************
-* writeMonState — saves aWnd's geometry + state under its monitor's key and marks it the
-* last-used monitor. Skips a minimized window.
+* beginPlacementChange / endPlacementChange — save-suppression counter (see interface).
 *******************************************************************************}
-procedure writeMonState(aWnd: HWND);
-var
-    key, geom: string;
+procedure beginPlacementChange();
 begin
-    if (aWnd = 0) or IsIconic(aWnd) then
-        Exit;
-    key := monitorKeyForWindow(aWnd);
-    geom := placementString(aWnd);
-    if (key = '') or (geom = '') then
-        Exit;
-    setStateValue('mon.' + key + '.win', geom);
-    setStateValue('mon.' + key + '.work', monitorWorkString(aWnd));
-    setStateValue('lastmon', key);
+    Inc(gSuppress);
+end;
+
+procedure endPlacementChange();
+begin
+    if gSuppress > 0 then
+        Dec(gSuppress);
 end;
 
 {*******************************************************************************
-* applyMonState — restores the layout remembered for aKey onto aWnd (assumed already on
-* that monitor), remapping if the monitor's work area changed.
+* seedCache — sets the last-known-good cache to a placement the app itself just applied
+* (aRect = the NORMAL rect in screen coordinates).
 *******************************************************************************}
-function applyMonState(aWnd: HWND; const aKey: string): Boolean;
+procedure seedCache(const aRect: TRect; aMax: Boolean);
+begin
+    gCacheRect := aRect;
+    gCacheMax := aMax;
+    gCacheKey := monitorKeyForRect(aRect);
+    gCacheWork := monitorWorkAreaForRect(aRect);
+    gCacheValid := gCacheKey <> '';
+end;
+
+{*******************************************************************************
+* captureState — refreshes the cache from the LIVE window: the normal rect (screen
+* coords; kept from the cache while maximized), the maximized flag, and the monitor
+* identity. Silently keeps the previous cache when the window is gone or minimized —
+* that stale-but-valid state is exactly what the exit flush needs.
+*******************************************************************************}
+procedure captureState(aWnd: HWND);
 var
-    win, work, curWork, target: TRect;
-    showCmd: Integer;
+    r: TRect;
+    key: string;
+    zoomed: Boolean;
     wp: TWindowPlacement;
 begin
+    if (aWnd = 0) or (not IsWindow(aWnd)) or IsIconic(aWnd) then
+        Exit;
+    zoomed := IsZoomed(aWnd);
+    if zoomed then
+    begin
+        // The visible rect is the whole work area; the cache keeps the last normal rect.
+        // First-ever capture on an already-maximized window: fall back to the placement's
+        // restore rect (exact for a bottom taskbar, sane otherwise).
+        if not gCacheValid then
+        begin
+            FillChar(wp, SizeOf(wp), 0);
+            wp.length := SizeOf(wp);
+            if not GetWindowPlacement(aWnd, @wp) then
+                Exit;
+            gCacheRect := wp.rcNormalPosition;
+        end;
+    end
+    else
+    begin
+        if not GetWindowRect(aWnd, r) then
+            Exit;
+        gCacheRect := r;
+    end;
+    key := monitorKeyForWindow(aWnd);
+    if key = '' then
+        Exit;
+    gCacheMax := zoomed;
+    gCacheKey := key;
+    gCacheWork := monitorWorkAreaForWindow(aWnd);
+    gCacheValid := True;
+end;
+
+{*******************************************************************************
+* captureIfChanged — cheap-path capture for WM_WINDOWPOSCHANGED: skips the (relatively
+* costly) monitor-key lookup when nothing relevant changed since the last capture.
+*******************************************************************************}
+procedure captureIfChanged(aWnd: HWND);
+var
+    r: TRect;
+    zoomed: Boolean;
+begin
+    if (aWnd = 0) or (not IsWindow(aWnd)) or IsIconic(aWnd) then
+        Exit;
+    zoomed := IsZoomed(aWnd);
+    if gCacheValid and (zoomed = gCacheMax) then
+    begin
+        if zoomed then
+            Exit;   // maximized and already cached: the normal rect is not changing
+        if GetWindowRect(aWnd, r) and rectsEqual(r, gCacheRect) then
+            Exit;
+    end;
+    captureState(aWnd);
+end;
+
+{*******************************************************************************
+* persistState — writes the cached state under its monitor's key and marks that monitor
+* the last-used one, in a single batched file write.
+*******************************************************************************}
+procedure persistState();
+var
+    sc: Integer;
+begin
+    if (not gCacheValid) or (gCacheKey = '') then
+        Exit;
+    if gCacheMax then
+        sc := SW_SHOWMAXIMIZED
+    else
+        sc := SW_SHOWNORMAL;
+    setStateValues(
+        ['mon.' + gCacheKey + '.win', 'mon.' + gCacheKey + '.work', 'lastmon'],
+        [rectStr(gCacheRect) + ' ' + IntToStr(sc), rectStr(gCacheWork), gCacheKey]);
+end;
+
+{*******************************************************************************
+* saveNow — capture + persist (the settle-event save).
+*******************************************************************************}
+procedure saveNow(aWnd: HWND);
+begin
+    captureState(aWnd);
+    persistState();
+end;
+
+{*******************************************************************************
+* applyTarget — applies a Normal placement (screen coords + maximized flag) to a live
+* window with tracker saves suppressed, then re-seeds the cache with what was applied.
+*******************************************************************************}
+procedure applyTarget(aWnd: HWND; const aRect: TRect; aMax: Boolean);
+begin
+    if (aWnd = 0) or (not IsWindow(aWnd)) then
+        Exit;
+    beginPlacementChange;
+    try
+        if IsZoomed(aWnd) then
+            ShowWindow(aWnd, SW_RESTORE);
+        SetWindowPos(aWnd, 0, aRect.Left, aRect.Top,
+            aRect.Right - aRect.Left, aRect.Bottom - aRect.Top,
+            SWP_NOZORDER or SWP_NOACTIVATE);
+        if aMax then
+            ShowWindow(aWnd, SW_MAXIMIZE);
+    finally
+        endPlacementChange;
+    end;
+    seedCache(aRect, aMax);
+end;
+
+{*******************************************************************************
+* applySavedFor — restores the layout remembered for aKey onto aWnd (assumed already on
+* that monitor), remapping if that monitor's work area changed, clamping the result
+* on-screen, and persisting so lastmon reflects the move. False when aKey has no state.
+*******************************************************************************}
+function applySavedFor(aWnd: HWND; const aKey: string): Boolean;
+var
+    max: Boolean;
+    win, work, curWork, target: TRect;
+begin
     Result := False;
-    if not readMonState(aKey, win, work, showCmd) then
+    if not readMonState(aKey, win, work, max) then
         Exit;
     curWork := monitorWorkAreaForWindow(aWnd);
     if rectsEqual(work, curWork) then
         target := win
     else
         target := remapNormalRect(win, work, curWork);
-    FillChar(wp, SizeOf(wp), 0);
-    wp.length := SizeOf(wp);
-    wp.rcNormalPosition := target;
-    if showCmd = SW_SHOWMAXIMIZED then
-        wp.showCmd := SW_SHOWMAXIMIZED
-    else
-        wp.showCmd := SW_SHOWNORMAL;
-    SetWindowPlacement(aWnd, @wp);
+    if not fullyWithin(target, curWork) then
+        clampRect(target, curWork);
+    applyTarget(aWnd, target, max);
+    persistState();
     Result := True;
 end;
 
 {*******************************************************************************
-* resolveStartupPlacement — where to open, from per-monitor state:
+* resolveStartupTarget — where to open, from per-monitor state:
 *  (a) the last-used monitor is still connected -> its remembered layout (remapped if its
 *      resolution changed);
 *  (b) else the monitor nearest the old position has its OWN remembered layout -> use it;
 *  (c) else remap the last geometry onto that nearest monitor.
-* False when there is no per-monitor state at all (caller falls back to legacy/default).
+* Every branch clamps the target on-screen. False when there is no per-monitor state at
+* all (caller falls back to legacy/default).
 *******************************************************************************}
-function resolveStartupPlacement(out aTarget: TRect; out aShowCmd: Integer): Boolean;
+function resolveStartupTarget(out aTarget: TRect; out aMax: Boolean): Boolean;
 var
+    sMax, fbMax: Boolean;
     lastKey, fbKey: string;
     sWin, sWork, curWork, fbWin, fbWork, fbCur: TRect;
-    sShow, fbShow: Integer;
 begin
     Result := False;
     if not readValue('lastmon', lastKey) then
         Exit;
     lastKey := Trim(lastKey);
-    if not readMonState(lastKey, sWin, sWork, sShow) then
+    if not readMonState(lastKey, sWin, sWork, sMax) then
         Exit;
     if findMonitorWorkByKey(lastKey, curWork) then       // (a) last monitor still here
     begin
-        aShowCmd := sShow;
+        aMax := sMax;
         if rectsEqual(sWork, curWork) then
             aTarget := sWin
         else
             aTarget := remapNormalRect(sWin, sWork, curWork);
+        if not fullyWithin(aTarget, curWork) then
+            clampRect(aTarget, curWork);
         Exit(True);
     end;
     fbKey := monitorKeyForRect(sWin);                    // (b) fallback monitor's own layout
-    if (fbKey <> '') and readMonState(fbKey, fbWin, fbWork, fbShow)
+    if (fbKey <> '') and readMonState(fbKey, fbWin, fbWork, fbMax)
         and findMonitorWorkByKey(fbKey, fbCur) then
     begin
-        aShowCmd := fbShow;
+        aMax := fbMax;
         if rectsEqual(fbWork, fbCur) then
             aTarget := fbWin
         else
             aTarget := remapNormalRect(fbWin, fbWork, fbCur);
+        if not fullyWithin(aTarget, fbCur) then
+            clampRect(aTarget, fbCur);
         Exit(True);
     end;
-    aShowCmd := sShow;                                   // (c) remap last geometry onto nearest
+    aMax := sMax;                                        // (c) remap last geometry onto nearest
     aTarget := remapNormalRect(sWin, sWork, monitorWorkAreaForRect(sWin));
     Result := True;
 end;
 
 {*******************************************************************************
-* handleDisplayChange — on a runtime monitor change, if the Normal window got stranded
-* (off its monitor / no longer fits), re-place it from the saved per-monitor state.
+* handleDisplayChange — a monitor was (dis)connected / changed resolution while running.
+* Maximized windows are left alone (Windows re-homes them itself); a stranded Normal
+* window is remapped onto its nearest monitor per the policy and the result persisted.
 *******************************************************************************}
 procedure handleDisplayChange(aWnd: HWND);
 var
+    src: TRect;
     cur, work, target: TRect;
-    wp: TWindowPlacement;
-    showCmd: Integer;
-    maximized: Boolean;
 begin
-    if (aWnd = 0) or IsIconic(aWnd) then
+    if (aWnd = 0) or (gSuppress > 0) or (not IsWindow(aWnd)) then
         Exit;
-    FillChar(wp, SizeOf(wp), 0);
-    wp.length := SizeOf(wp);
-    if not GetWindowPlacement(aWnd, @wp) then
+    gCurMon := monitorHandleForWindow(aWnd);   // refresh the arrival baseline
+    if IsIconic(aWnd) or IsZoomed(aWnd) then
         Exit;
-    maximized := wp.showCmd = SW_SHOWMAXIMIZED;
-    cur := wp.rcNormalPosition;
+    if not GetWindowRect(aWnd, cur) then
+        Exit;
     work := monitorWorkAreaForRect(cur);
-    if fullyWithin(cur, work) and (not maximized) then
-        Exit;   // still fully visible; leave it
-    if resolveStartupPlacement(target, showCmd) then
+    if fullyWithin(cur, work) then
     begin
-        FillChar(wp, SizeOf(wp), 0);
-        wp.length := SizeOf(wp);
-        wp.rcNormalPosition := target;
-        if showCmd = SW_SHOWMAXIMIZED then
-            wp.showCmd := SW_SHOWMAXIMIZED
-        else
-            wp.showCmd := SW_SHOWNORMAL;
-        SetWindowPlacement(aWnd, @wp);
-    end
-    else
-    begin
-        target := remapNormalRect(cur, mkRect(0, 0, 0, 0), work);
-        FillChar(wp, SizeOf(wp), 0);
-        wp.length := SizeOf(wp);
-        wp.rcNormalPosition := target;
-        if maximized then
-            wp.showCmd := SW_SHOWMAXIMIZED
-        else
-            wp.showCmd := SW_SHOWNORMAL;
-        SetWindowPlacement(aWnd, @wp);
+        captureState(aWnd);   // still fine; refresh the monitor identity in the cache
+        Exit;
     end;
+    if gCacheValid then
+        src := gCacheWork
+    else
+        src := mkRect(0, 0, 0, 0);
+    target := remapNormalRect(cur, src, work);
+    applyTarget(aWnd, target, False);
+    persistState();
 end;
 
 {*******************************************************************************
-* restoreWindowState — places the (still-hidden) window from the saved per-monitor state,
-* falling back to the legacy single win=/winmon= slot for pre-upgrade state files.
+* restoreWindowState — positions the (still-hidden) window from the saved per-monitor
+* state, falling back to the legacy win=/winmon= slot for pre-upgrade state files. The
+* window is revealed later by showMainWindow at restoredShowCmd.
 *******************************************************************************}
 procedure restoreWindowState(aWnd: HWND);
 var
+    max: Boolean;
+    lShow: Integer;
     target, savedWin, savedMon: TRect;
-    showCmd, lShow: Integer;
-    wp: TWindowPlacement;
 begin
-    if resolveStartupPlacement(target, showCmd) then
+    if resolveStartupTarget(target, max) then
         { placed from per-monitor state }
     else if readSavedNormal(savedWin, savedMon, lShow) then
     begin
         target := normalTarget(savedWin, savedMon);   // legacy win=/winmon=
-        showCmd := lShow;
+        max := lShow = SW_SHOWMAXIMIZED;
     end
     else
         Exit;   // nothing saved -> leave the webview default
-    if showCmd = SW_SHOWMAXIMIZED then
+    if max then
         gShowCmd := SW_SHOWMAXIMIZED
     else
         gShowCmd := SW_SHOWNORMAL;
-    FillChar(wp, SizeOf(wp), 0);
-    wp.length := SizeOf(wp);
-    // Keep it HIDDEN — revealed later at the right place/state; a maximized window
-    // maximizes on the monitor holding rcNormalPosition.
-    wp.rcNormalPosition := target;
-    wp.showCmd := SW_HIDE;
-    SetWindowPlacement(aWnd, @wp);
+    beginPlacementChange;
+    try
+        // Position the HIDDEN window in screen coordinates; a later
+        // ShowWindow(SW_SHOWMAXIMIZED) maximizes on the monitor holding this rect.
+        SetWindowPos(aWnd, 0, target.Left, target.Top,
+            target.Right - target.Left, target.Bottom - target.Top,
+            SWP_NOZORDER or SWP_NOACTIVATE);
+    finally
+        endPlacementChange;
+    end;
+    // Seed the cache so even a zero-interaction session persists a valid state at exit.
+    seedCache(target, max);
 end;
 
 {*******************************************************************************
-* centeredDefault — a centred 1024x768 rectangle on the primary monitor.
+* centeredIn — a centred 1024x768 (clamped) rectangle inside aWork.
 *******************************************************************************}
-procedure centeredDefault(out aRect: TRect);
-var
-    sw, sh: Integer;
+function centeredIn(const aWork: TRect): TRect;
 begin
-    sw := GetSystemMetrics(SM_CXSCREEN);
-    sh := GetSystemMetrics(SM_CYSCREEN);
-    aRect.Left := (sw - 1024) div 2;
-    aRect.Top := (sh - 768) div 2;
-    aRect.Right := aRect.Left + 1024;
-    aRect.Bottom := aRect.Top + 768;
+    Result.Left := aWork.Left + Max(0, (aWork.Right - aWork.Left - 1024) div 2);
+    Result.Top := aWork.Top + Max(0, (aWork.Bottom - aWork.Top - 768) div 2);
+    Result.Right := Result.Left + 1024;
+    Result.Bottom := Result.Top + 768;
+    clampRect(Result, aWork);
 end;
 
 {*******************************************************************************
-* applyNormalPlacement — positions and SHOWS the window from the saved 'win=' geometry
-* (normal or maximized, WN-D7), or a centred 1024x768 default when none is saved / it is
-* off-screen. Used when switching to Normal mode at runtime (WN2.1).
+* applyNormalPlacement — used when switching Kiosk -> Normal at RUNTIME: restores the
+* CURRENT monitor's remembered layout (a mode toggle must un-fullscreen in place, never
+* teleport to another monitor); without one, remaps the last-used/legacy state onto the
+* current monitor; without any state, centres a default there.
 *******************************************************************************}
 procedure applyNormalPlacement(aWnd: HWND);
 var
-    savedWin, savedMon, target: TRect;
-    showCmd, lShow: Integer;
-    wp: TWindowPlacement;
+    max: Boolean;
+    lShow: Integer;
+    curKey: string;
+    curWork, target, sWin, sWork, savedWin, savedMon: TRect;
 begin
-    if resolveStartupPlacement(target, showCmd) then
-        { placed from per-monitor state }
+    curKey := monitorKeyForWindow(aWnd);
+    if (curKey <> '') and applySavedFor(aWnd, curKey) then
+        Exit;   // this monitor's own remembered layout, in place
+    curWork := monitorWorkAreaForWindow(aWnd);
+    if readLastMonState(sWin, sWork, max) then
+        target := remapNormalRect(sWin, sWork, curWork)
     else if readSavedNormal(savedWin, savedMon, lShow) then
     begin
-        target := normalTarget(savedWin, savedMon);
-        showCmd := lShow;
+        target := remapNormalRect(savedWin, savedMon, curWork);
+        max := lShow = SW_SHOWMAXIMIZED;
     end
     else
     begin
-        centeredDefault(target);
-        showCmd := SW_SHOWNORMAL;
+        target := centeredIn(curWork);
+        max := False;
     end;
-    FillChar(wp, SizeOf(wp), 0);
-    wp.length := SizeOf(wp);
-    wp.rcNormalPosition := target;
-    if showCmd = SW_SHOWMAXIMIZED then
-        wp.showCmd := SW_SHOWMAXIMIZED
-    else
-        wp.showCmd := SW_SHOWNORMAL;
-    SetWindowPlacement(aWnd, @wp);
+    applyTarget(aWnd, target, max);
+    persistState();
 end;
 
 {*******************************************************************************
-* stateWndProc — the single main-window subclass (WN-D5). In Normal mode it records
-* the windowed geometry (win=) on move/size and persists it when a move/resize settles
-* or the window is maximized/restored. In Kiosk mode it defers a drag/resize-end to the
-* AppBar's handler (refill monitor / remember restored rect), or saves the kiosk rect if
-* no handler is registered. Then chains to the original proc.
+* stateWndProc — the single main-window subclass (WN-D5). Normal mode: captures/persists
+* geometry on SETTLE events only (drag/resize end, maximize/restore outside the modal
+* loop, monitor arrival), suppressed while the app applies placements. Kiosk mode: defers
+* drag-end and display changes to the AppBar handlers. Then chains to the original proc.
 *******************************************************************************}
 function stateWndProc(aWnd: HWND; aMsg: UINT; aWParam: WPARAM; aLParam: LPARAM): LRESULT; stdcall;
 var
+    r: TRect;
+    m: HMONITOR;
     curKey: string;
+    pureMove: Boolean;
 begin
     // Custom system-menu items (Normal mode) arrive as WM_SYSCOMMAND; let the app handle
     // them and swallow the message. The low 4 bits are system-reserved (mask with $FFF0).
@@ -741,35 +865,84 @@ begin
             Exit(0);
     if gTrackMode = wmNormal then
         case aMsg of
-            WM_SIZE:
-                // Maximize / restore / Aero-snap settles here (no WM_EXITSIZEMOVE): save it.
-                if (not IsIconic(aWnd)) and ((aWParam = SIZE_MAXIMIZED) or (aWParam = SIZE_RESTORED)) then
-                    writeMonState(aWnd);
             WM_ENTERSIZEMOVE:
-                gDragStartKey := monitorKeyForWindow(aWnd);
+                begin
+                    gInSizeMove := True;
+                    gDragStartKey := monitorKeyForWindow(aWnd);
+                    if GetWindowRect(aWnd, r) then
+                    begin
+                        gDragStartW := r.Right - r.Left;
+                        gDragStartH := r.Bottom - r.Top;
+                    end
+                    else
+                    begin
+                        gDragStartW := 0;
+                        gDragStartH := 0;
+                    end;
+                end;
             WM_EXITSIZEMOVE:
                 begin
-                    // If a drag moved the window onto a DIFFERENT monitor that has a remembered
-                    // layout, snap to it; otherwise just save the new geometry for this monitor.
+                    gInSizeMove := False;
+                    // A PURE MOVE onto a different monitor that has a remembered layout
+                    // snaps to it; a resize (even one crossing monitors) just saves — the
+                    // user's freshly chosen size must never be discarded.
+                    pureMove := GetWindowRect(aWnd, r)
+                        and (r.Right - r.Left = gDragStartW)
+                        and (r.Bottom - r.Top = gDragStartH);
                     curKey := monitorKeyForWindow(aWnd);
-                    if (curKey <> '') and (curKey <> gDragStartKey) and hasMonState(curKey) then
-                        applyMonState(aWnd, curKey)
+                    gCurMon := monitorHandleForWindow(aWnd);
+                    if pureMove and (curKey <> '') and (curKey <> gDragStartKey)
+                        and applySavedFor(aWnd, curKey) then
+                        { snapped to the destination monitor's layout (and persisted) }
                     else
-                        writeMonState(aWnd);
+                        saveNow(aWnd);
+                end;
+            WM_SIZE:
+                // Maximize / restore / keyboard-snap settle here OUTSIDE the modal loop;
+                // mid-drag WM_SIZE (live resize, maximized-drag tear-off) must not save.
+                if (gSuppress = 0) and (not gInSizeMove) and (not IsIconic(aWnd))
+                    and ((aWParam = SIZE_MAXIMIZED) or (aWParam = SIZE_RESTORED)) then
+                    saveNow(aWnd);
+            WM_WINDOWPOSCHANGED:
+                if (gSuppress = 0) and (not gInSizeMove) and (not IsIconic(aWnd)) then
+                begin
+                    m := monitorHandleForWindow(aWnd);
+                    if (gCurMon <> 0) and (m <> gCurMon) then
+                    begin
+                        // Arrived on another monitor WITHOUT a drag (Win+Shift+Arrow or a
+                        // programmatic move): same policy as a drag — restore that
+                        // monitor's remembered layout, else record the new home.
+                        gCurMon := m;
+                        curKey := monitorKeyForWindow(aWnd);
+                        if (curKey = '') or (not applySavedFor(aWnd, curKey)) then
+                            saveNow(aWnd);
+                    end
+                    else
+                    begin
+                        gCurMon := m;
+                        captureIfChanged(aWnd);   // keep the exit-flush cache fresh
+                    end;
                 end;
             WM_DISPLAYCHANGE:
                 handleDisplayChange(aWnd);
         end
     else
         case aMsg of
+            WM_ENTERSIZEMOVE:
+                gInSizeMove := True;
             WM_EXITSIZEMOVE:
-                if Assigned(gKioskDragEnd) then
-                    gKioskDragEnd()
-                else
-                    saveKioskRect(aWnd);
+                begin
+                    gInSizeMove := False;
+                    if Assigned(gKioskDragEnd) then
+                        gKioskDragEnd()
+                    else
+                        saveKioskRect(aWnd);
+                end;
             WM_DISPLAYCHANGE:
-                if Assigned(gKioskDragEnd) then
-                    gKioskDragEnd();   // kiosk: re-fill the (nearest) monitor
+                // Kiosk: re-fill the monitor when fullscreen; a restored kiosk window is
+                // left where the OS put it (its saved rect must NOT be overwritten).
+                if Assigned(gKioskDisplay) then
+                    gKioskDisplay();
         end;
     Result := CallWindowProcW(TFNWndProc(Pointer(gOrigProc)), aWnd, aMsg, aWParam, aLParam);
 end;
@@ -801,8 +974,8 @@ begin
 end;
 
 {*******************************************************************************
-* setTrackMode — tells the tracker which mode's geometry to record (Normal -> win=,
-* Kiosk -> kioskrect via the drag-end handler).
+* setTrackMode — tells the tracker which mode's geometry to record (Normal -> per-monitor
+* mon.<key>.* state, Kiosk -> kioskrect via the drag-end handler).
 *******************************************************************************}
 procedure setTrackMode(aMode: TWindowMode);
 begin
@@ -815,6 +988,14 @@ end;
 procedure setKioskDragEndHandler(aProc: TKioskDragEndProc);
 begin
     gKioskDragEnd := aProc;
+end;
+
+{*******************************************************************************
+* setKioskDisplayChangeHandler — registers the AppBar's kiosk display-change handler.
+*******************************************************************************}
+procedure setKioskDisplayChangeHandler(aProc: TKioskDragEndProc);
+begin
+    gKioskDisplay := aProc;
 end;
 
 {*******************************************************************************
@@ -835,12 +1016,16 @@ begin
 end;
 
 {*******************************************************************************
-* flushWindowState — on shutdown, save the tracked Normal window's state for its monitor.
+* flushWindowState — on shutdown (or before leaving Normal mode), persist the tracked
+* window's state: best-effort live refresh, then write the last-known-good cache — which
+* survives an already-destroyed (X-close) or minimized window.
 *******************************************************************************}
 procedure flushWindowState();
 begin
-    if gTrackMode = wmNormal then
-        writeMonState(gTrackedWnd);
+    if gTrackMode <> wmNormal then
+        Exit;
+    captureState(gTrackedWnd);
+    persistState();
 end;
 
 {*******************************************************************************
@@ -889,7 +1074,7 @@ var
     r: TRect;
 begin
     if (aWnd <> 0) and GetWindowRect(aWnd, r) then
-        setStateValue('kioskrect', Format('%d %d %d %d', [r.Left, r.Top, r.Right, r.Bottom]));
+        setStateValue('kioskrect', rectStr(r));
 end;
 
 function loadKioskRect(out aLeft, aTop, aRight, aBottom: Integer): Boolean;

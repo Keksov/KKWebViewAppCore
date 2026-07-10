@@ -458,6 +458,22 @@ begin
 end;
 
 {*******************************************************************************
+* kioskDisplayChange
+* Registered with AppWindowState's tracker for WM_DISPLAYCHANGE in kiosk mode: a
+* fullscreen window re-fills its (nearest surviving) monitor. A restored window is left
+* where the OS put it and its saved rect is NOT overwritten — a display change is not a
+* user action, so persisting the post-disconnect position would destroy good state.
+*******************************************************************************}
+procedure kioskDisplayChange();
+begin
+    if gFull then
+    begin
+        applyMainGeometry(True);
+        rememberFullscreenMonitor;
+    end;
+end;
+
+{*******************************************************************************
 * moveBtnProc
 * Subclass of the Move button: pressing it starts a title-bar-style drag of the
 * main window (via WM_NCLBUTTONDOWN/HTCAPTION), so the window can be dragged around
@@ -504,6 +520,7 @@ begin
     installMainTracker(gMainWnd);
     setTrackMode(wmKiosk);
     setKioskDragEndHandler(@kioskDragEnd);
+    setKioskDisplayChangeHandler(@kioskDisplayChange);
     gScreenW := GetSystemMetrics(SM_CXSCREEN);
     gScreenH := GetSystemMetrics(SM_CYSCREEN);
     inst := GetModuleHandleW(nil);

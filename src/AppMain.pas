@@ -6,7 +6,7 @@ program AppMain;
 {$ENDIF}
 
 uses
-    Math, Windows, SysUtils, webview, AppConfig, AppLaunch, AppUpdate,
+    Math, Windows, SysUtils, webview, AppConfig, AppLaunch, AppUpdate, AppMonitors,
     AppWindowState, AppWindowMode, AppBar, AppSplash, AppProfile, AppBranding;
 
 const
@@ -335,22 +335,37 @@ begin
     gWindowMode := aMode;
     if aMode = wmNormal then
     begin
-        setBarActive(False);              // hide the floating control bar (WN-D2)
-        setTrackMode(wmNormal);
-        applyNormalStyle(gMainWnd);       // OS-decorated frame
-        applyNormalPlacement(gMainWnd);   // position + show from saved win= (WN-D7)
+        // The style swap fires WM_SIZE while the window still holds the kiosk fullscreen
+        // rect; suppress tracker saves for the transition so that rect is never persisted
+        // as the monitor's Normal state. applyNormalPlacement then restores IN PLACE (the
+        // current monitor's remembered layout) and persists the result itself.
+        beginPlacementChange;
+        try
+            setBarActive(False);          // hide the floating control bar (WN-D2)
+            setTrackMode(wmNormal);
+            applyNormalStyle(gMainWnd);   // OS-decorated frame
+        finally
+            endPlacementChange;
+        end;
+        applyNormalPlacement(gMainWnd);
         addSystemMenuItems(gMainWnd);     // "toggle mode" + DevTools items (WN2.2)
     end
     else
     begin
-        setTrackMode(wmKiosk);
-        if not gBarBuilt then
-        begin
-            createControlBar(gMainWnd, True, gDevMode, @openDevTools);
-            gBarBuilt := True;
-        end
-        else
-            activateKioskBar();
+        flushWindowState();               // persist the outgoing Normal layout first
+        beginPlacementChange;             // kiosk geometry must not be saved as Normal state
+        try
+            setTrackMode(wmKiosk);
+            if not gBarBuilt then
+            begin
+                createControlBar(gMainWnd, True, gDevMode, @openDevTools);
+                gBarBuilt := True;
+            end
+            else
+                activateKioskBar();
+        finally
+            endPlacementChange;
+        end;
     end;
     saveDispMode(windowModeToString(aMode));
     SetForegroundWindow(gMainWnd);
@@ -446,19 +461,11 @@ end;
 * remap). Writes PASS/FAIL per case to %TEMP%\appcore-remap-test.log (the GUI subsystem has
 * no console). Run: AppMain.exe --test-remap
 *******************************************************************************}
-function mkRect(aL, aT, aR, aB: Integer): TRect;
-begin
-    Result.Left := aL;
-    Result.Top := aT;
-    Result.Right := aR;
-    Result.Bottom := aB;
-end;
-
 procedure runRemapTest();
 var
     log: TextFile;
-    passed, total: Integer;
     src, tgt, win: TRect;
+    passed, total: Integer;
 
     procedure check(const aName: string; const aGot, aExp: TRect);
     var
@@ -500,6 +507,16 @@ begin
     // 4) Unknown source monitor (old saved state), window fits: centre it.
     src := mkRect(0, 0, 0, 0); win := mkRect(0, 0, 800, 600); tgt := mkRect(0, 0, 1280, 1024);
     check('nosrc-center', remapNormalRect(win, src, tgt), mkRect(240, 212, 1040, 812));
+
+    // 5) Equal-size monitor at a NEGATIVE virtual-desktop origin (external monitor left of
+    // the primary): edge margins carry over into the negative coordinate space.
+    src := mkRect(0, 0, 1920, 1080); win := mkRect(100, 100, 900, 700); tgt := mkRect(-1920, 0, 0, 1080);
+    check('neg-origin-margins', remapNormalRect(win, src, tgt), mkRect(-1820, 100, -1020, 700));
+
+    // 6) Saved rect entirely OFF the virtual screen (foreign/corrupt state), unknown
+    // source: it must come back on-screen (centred), never restored off-screen.
+    src := mkRect(0, 0, 0, 0); win := mkRect(5000, 5000, 5800, 5600); tgt := mkRect(0, 0, 1280, 1024);
+    check('offscreen-recenter', remapNormalRect(win, src, tgt), mkRect(240, 212, 1040, 812));
 
     Writeln(log, Format('TOTAL: %d/%d passed', [passed, total]));
     CloseFile(log);
@@ -718,9 +735,10 @@ begin
 
     webview_run(w);
 
-    // Persist the last tracked window geometry (windowed mode only).
-    if not useFullScreen then
-        flushWindowState();
+    // Persist the last tracked window geometry. Unconditional: flushWindowState no-ops
+    // outside Normal tracking, and gating on the STARTUP mode here would skip the flush
+    // for a kiosk-started session that switched to Normal at runtime.
+    flushWindowState();
 
     // Window closed: stop the dev servers / build process and their console
     // windows before tearing down the webview.
