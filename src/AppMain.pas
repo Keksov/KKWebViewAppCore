@@ -315,6 +315,7 @@ begin
         // same chrome as a runtime switch: WS_OVERLAPPEDWINDOW brings WS_SYSMENU, which the
         // title-bar icon and the system menu both require (without it neither appears).
         applyNormalStyle(gMainWnd);
+        applyWindowIcons(gMainWnd, brandIconBig, brandIconSmall);  // title-bar icon needs WS_SYSMENU
         ShowWindow(gMainWnd, restoredShowCmd);
         addSystemMenuItems(gMainWnd);     // Normal at startup: add the toggle/DevTools items
     end;
@@ -348,6 +349,10 @@ begin
             endPlacementChange;
         end;
         applyNormalPlacement(gMainWnd);
+        // The title-bar icon is a WM_SETICON property set once at startup; a kiosk
+        // (WS_POPUP) window has no caption to show it, so re-assert it now that the
+        // OS-decorated frame exists — otherwise the new caption shows a blank icon.
+        applyWindowIcons(gMainWnd, brandIconBig, brandIconSmall);
         addSystemMenuItems(gMainWnd);     // "toggle mode" + DevTools items (WN2.2)
     end
     else
