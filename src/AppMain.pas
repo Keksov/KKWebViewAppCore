@@ -358,7 +358,9 @@ begin
             setTrackMode(wmKiosk);
             if not gBarBuilt then
             begin
-                createControlBar(gMainWnd, True, gDevMode, @openDevTools);
+                // False: a runtime switch enters fullscreen kiosk on the CURRENT monitor,
+                // not the saved kiosk monitor, so the window does not jump to another display.
+                createControlBar(gMainWnd, True, gDevMode, @openDevTools, False);
                 gBarBuilt := True;
             end
             else

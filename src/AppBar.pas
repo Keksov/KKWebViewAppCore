@@ -22,16 +22,21 @@ type
   can always be located. Must be called on the GUI thread before the webview
   message loop starts; that loop pumps the bar's messages. aFullScreen tells the
   bar the window's initial state. When aDevTools is True an extra button is shown
-  (dev mode) that calls aDevProc to open the browser dev-tools window. }
+  (dev mode) that calls aDevProc to open the browser dev-tools window.
+  aRestoreStartupGeometry (default True) restores the saved kiosk monitor/state at
+  startup; pass False for a runtime Normal->Kiosk switch, which instead enters
+  fullscreen on the monitor the window is currently on (no jump to another display). }
 procedure createControlBar(aMainWindow: HWND; aFullScreen: Boolean;
-    aDevTools: Boolean = False; aDevProc: TDevToolsProc = nil);
+    aDevTools: Boolean = False; aDevProc: TDevToolsProc = nil;
+    aRestoreStartupGeometry: Boolean = True);
 
 { Shows/hides the floating bar at runtime. In Normal mode the OS caption replaces it, so
   it is deactivated (hidden and kept from re-showing) — WN-D2. }
 procedure setBarActive(aActive: Boolean);
 
-{ Re-activates kiosk mode from a running Normal window: shows the bar and re-asserts the
-  saved kiosk fullscreen/restored geometry. Use when the bar was already created. }
+{ Re-activates kiosk mode from a running Normal window: shows the bar and enters fullscreen
+  kiosk on the monitor the window is currently on (a mode toggle must not move the window to
+  another display). Use when the bar was already created. }
 procedure activateKioskBar();
 
 { Registers the handler called when the user Ctrl-clicks the Max button (switch to Normal
@@ -494,7 +499,8 @@ end;
 * createControlBar
 *******************************************************************************}
 procedure createControlBar(aMainWindow: HWND; aFullScreen: Boolean;
-    aDevTools: Boolean = False; aDevProc: TDevToolsProc = nil);
+    aDevTools: Boolean = False; aDevProc: TDevToolsProc = nil;
+    aRestoreStartupGeometry: Boolean = True);
 var
     wc: WNDCLASSEXW;
     inst: HINST;
@@ -568,36 +574,50 @@ begin
     setBarAlpha(ALPHA_IDLE);
     SetTimer(gBarWnd, TIMER_ID, TIMER_MS, nil);
 
-    // Apply the saved (or default) fullscreen/restored state once the message loop
-    // is running, re-asserting for ~1s (34 * 30ms) to win over the webview's own
-    // startup resize of the host window.
-    if loadKioskFull(savedFull) then
-        gFull := savedFull;
-
-    // Restore onto the last-used monitor. gPreferredPt is a point on it; if that
-    // monitor is now disconnected, MonitorFromPoint/NEAREST resolves to the nearest
-    // connected one (i.e. the first available), keeping the saved mode.
-    if gFull and loadKioskMon(ml, mt, mr, mb) then
+    if aRestoreStartupGeometry then
     begin
-        gPreferredPt.X := (ml + mr) div 2;
-        gPreferredPt.Y := (mt + mb) div 2;
-    end
-    else if (not gFull) and loadKioskRect(ml, mt, mr, mb) then
-    begin
-        gPreferredPt.X := (ml + mr) div 2;
-        gPreferredPt.Y := (mt + mb) div 2;
+        // Startup: honour the saved fullscreen/restored state and restore onto the
+        // last-used monitor, re-asserting for ~1s (34 * 30ms) to win over the webview's
+        // own startup resize of the host window. gPreferredPt is a point on that monitor;
+        // if it is now disconnected, MonitorFromPoint/NEAREST resolves to the nearest
+        // connected one (the first available), keeping the saved mode.
+        if loadKioskFull(savedFull) then
+            gFull := savedFull;
+        if gFull and loadKioskMon(ml, mt, mr, mb) then
+        begin
+            gPreferredPt.X := (ml + mr) div 2;
+            gPreferredPt.Y := (mt + mb) div 2;
+        end
+        else if (not gFull) and loadKioskRect(ml, mt, mr, mb) then
+        begin
+            gPreferredPt.X := (ml + mr) div 2;
+            gPreferredPt.Y := (mt + mb) div 2;
+        end
+        else
+        begin
+            gPreferredPt.X := gScreenW div 2;
+            gPreferredPt.Y := gScreenH div 2;
+        end;
+        gUsePreferredMon := True;
+        gAssertTicks := 34;
     end
     else
     begin
-        gPreferredPt.X := gScreenW div 2;
-        gPreferredPt.Y := gScreenH div 2;
+        // Runtime Normal->Kiosk switch: enter fullscreen kiosk on the monitor the window
+        // is CURRENTLY on (never the stale saved kiosk monitor), so a mode toggle does not
+        // teleport the window to another display. No re-assert loop needed — the webview's
+        // one-shot startup resize is long past.
+        gFull := True;
+        gUsePreferredMon := False;
+        gAssertTicks := 0;
+        saveKioskFull(True);
     end;
-    gUsePreferredMon := True;
-    gAssertTicks := 34;
     // Apply the resolved geometry synchronously so a caller can position the (still
-    // hidden) window on the correct monitor BEFORE showing it — no flash on the
-    // primary monitor. The timer above re-asserts it for ~1s as a safety net.
+    // hidden) window on the correct monitor BEFORE showing it — no flash on the primary
+    // monitor. The startup timer re-asserts it for ~1s as a safety net.
     applyMainGeometry(gFull);
+    if not aRestoreStartupGeometry then
+        rememberFullscreenMonitor;   // record the current monitor as the kiosk monitor
 end;
 
 {*******************************************************************************
@@ -612,14 +632,20 @@ begin
 end;
 
 {*******************************************************************************
-* activateKioskBar — re-enter kiosk from Normal: mark the tracker kiosk, re-assert the
-* saved fullscreen/restored geometry, and let updateBar show the bar again.
+* activateKioskBar — re-enter kiosk from Normal: mark the tracker kiosk and enter fullscreen
+* on the monitor the window is CURRENTLY on (gUsePreferredMon False), never the stale saved
+* kiosk monitor, so a mode toggle does not move the window to another display. updateBar
+* shows the bar again on the next tick.
 *******************************************************************************}
 procedure activateKioskBar();
 begin
     gBarActive := True;
+    gFull := True;               // a mode toggle enters fullscreen kiosk...
+    gUsePreferredMon := False;   // ...on the monitor the window is currently on
     setTrackMode(wmKiosk);
-    applyMainGeometry(gFull);
+    applyMainGeometry(True);
+    saveKioskFull(True);
+    rememberFullscreenMonitor;
 end;
 
 {*******************************************************************************
