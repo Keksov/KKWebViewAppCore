@@ -250,11 +250,11 @@ end;
 *******************************************************************************}
 procedure setStateValues(const aKeys, aValues: array of string);
 var
-    i, nl: Integer;
-    keep: Boolean;
     data: string;
     rest: string;
     line: string;
+    keep: Boolean;
+    i, nl: Integer;
     outData: string;
 begin
     outData := '';
