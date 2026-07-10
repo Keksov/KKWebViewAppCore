@@ -14,16 +14,19 @@ interface
 uses
     Windows;
 
+{ A TRect from its four edges. }
+function mkRect(aL, aT, aR, aB: Integer): TRect;
+
+function rectsEqual(const aA, aB: TRect): Boolean;
+
 { Work area (excludes the taskbar) of the monitor most-overlapping aRect / holding aWnd,
   falling back to the primary monitor. }
 function monitorWorkAreaForRect(const aRect: TRect): TRect;
 function monitorWorkAreaForWindow(aWnd: HWND): TRect;
 
-{ Full rectangle (rcMonitor) of the monitor holding aWnd (for fullscreen). }
-function monitorFullRectForWindow(aWnd: HWND): TRect;
-
-function primaryWorkArea(): TRect;
-function rectsEqual(const aA, aB: TRect): Boolean;
+{ The HMONITOR currently holding aWnd (nearest). Cheap; for monitor-change detection —
+  handles stay stable until the display configuration changes. }
+function monitorHandleForWindow(aWnd: HWND): HMONITOR;
 
 { A stable key identifying the physical monitor holding aWnd / nearest aRect, derived from
   the EDID device-interface id (manufacturer + product + connector UID), hashed. Survives
@@ -62,6 +65,14 @@ type
         DeviceKey: array[0..127] of WideChar;
     end;
 
+    { findMonitorWorkByKey scratch, passed to the enum callback via its LPARAM. }
+    TFindByKey = record
+        ok: Boolean;
+        work: TRect;
+        key: string;
+    end;
+    PFindByKey = ^TFindByKey;
+
     TMonitorEnumProc = function(aMon: HMONITOR; aDC: HDC; aRc: PRect; aData: LPARAM): BOOL; stdcall;
 
 function MonitorFromWindow(aWnd: HWND; aFlags: DWORD): HMONITOR;
@@ -76,10 +87,25 @@ function EnumDisplayDevicesW(aDevice: PWideChar; aDevNum: DWORD;
 function EnumDisplayMonitors(aDC: HDC; aClip: PRect; aProc: TMonitorEnumProc; aData: LPARAM): BOOL;
     stdcall; external 'user32' name 'EnumDisplayMonitors';
 
-var
-    gWantKey: string;      // findMonitorWorkByKey scratch (startup is single-threaded)
-    gGotWork: TRect;
-    gGotOk: Boolean;
+{*******************************************************************************
+* mkRect
+*******************************************************************************}
+function mkRect(aL, aT, aR, aB: Integer): TRect;
+begin
+    Result.Left := aL;
+    Result.Top := aT;
+    Result.Right := aR;
+    Result.Bottom := aB;
+end;
+
+{*******************************************************************************
+* rectsEqual
+*******************************************************************************}
+function rectsEqual(const aA, aB: TRect): Boolean;
+begin
+    Result := (aA.Left = aB.Left) and (aA.Top = aB.Top)
+        and (aA.Right = aB.Right) and (aA.Bottom = aB.Bottom);
+end;
 
 {*******************************************************************************
 * primaryWork — work area of the primary monitor, from system metrics (fallback).
@@ -95,11 +121,6 @@ begin
     end;
 end;
 
-function primaryWorkArea(): TRect;
-begin
-    Result := primaryWork;
-end;
-
 {*******************************************************************************
 * infoOf — fills aInfo for aMonitor; False when the handle is invalid.
 *******************************************************************************}
@@ -111,7 +132,7 @@ begin
 end;
 
 {*******************************************************************************
-* monitorWorkAreaForRect / ForWindow / monitorFullRectForWindow
+* monitorWorkAreaForRect
 *******************************************************************************}
 function monitorWorkAreaForRect(const aRect: TRect): TRect;
 var
@@ -125,6 +146,9 @@ begin
         Result := primaryWork;
 end;
 
+{*******************************************************************************
+* monitorWorkAreaForWindow
+*******************************************************************************}
 function monitorWorkAreaForWindow(aWnd: HWND): TRect;
 var
     mi: TMonInfoEx;
@@ -133,27 +157,6 @@ begin
         Result := mi.rcWork
     else
         Result := primaryWork;
-end;
-
-function monitorFullRectForWindow(aWnd: HWND): TRect;
-var
-    mi: TMonInfoEx;
-begin
-    if infoOf(MonitorFromWindow(aWnd, MONITOR_DEFAULTTONEAREST), mi) then
-        Result := mi.rcMonitor
-    else
-    begin
-        Result.Left := 0;
-        Result.Top := 0;
-        Result.Right := GetSystemMetrics(SM_CXSCREEN);
-        Result.Bottom := GetSystemMetrics(SM_CYSCREEN);
-    end;
-end;
-
-function rectsEqual(const aA, aB: TRect): Boolean;
-begin
-    Result := (aA.Left = aB.Left) and (aA.Top = aB.Top)
-        and (aA.Right = aB.Right) and (aA.Bottom = aB.Bottom);
 end;
 
 {*******************************************************************************
@@ -187,9 +190,9 @@ end;
 *******************************************************************************}
 function fnvHex(const aStr: string): string;
 var
-    u: UnicodeString;
-    h: LongWord;
     i: Integer;
+    h: LongWord;
+    u: UnicodeString;
 begin
     u := LowerCase(UnicodeString(aStr));
     h := LongWord(2166136261);
@@ -207,9 +210,9 @@ end;
 *******************************************************************************}
 function monitorKeyForMonitor(aMonitor: HMONITOR): string;
 var
+    id: string;
     mi: TMonInfoEx;
     dd: TDisplayDeviceW;
-    id: string;
 begin
     Result := '';
     if not infoOf(aMonitor, mi) then
@@ -225,11 +228,25 @@ begin
         Result := 'm' + fnvHex(id);
 end;
 
+{*******************************************************************************
+* monitorHandleForWindow
+*******************************************************************************}
+function monitorHandleForWindow(aWnd: HWND): HMONITOR;
+begin
+    Result := MonitorFromWindow(aWnd, MONITOR_DEFAULTTONEAREST);
+end;
+
+{*******************************************************************************
+* monitorKeyForWindow
+*******************************************************************************}
 function monitorKeyForWindow(aWnd: HWND): string;
 begin
     Result := monitorKeyForMonitor(MonitorFromWindow(aWnd, MONITOR_DEFAULTTONEAREST));
 end;
 
+{*******************************************************************************
+* monitorKeyForRect
+*******************************************************************************}
 function monitorKeyForRect(const aRect: TRect): string;
 var
     r: TRect;
@@ -239,34 +256,41 @@ begin
 end;
 
 {*******************************************************************************
-* findByKeyProc / findMonitorWorkByKey — locate the current monitor with a given key.
+* findByKeyProc — EnumDisplayMonitors callback: matches each monitor's key against the
+* wanted one (scratch record via aData); stops the enumeration on a hit.
 *******************************************************************************}
 function findByKeyProc(aMon: HMONITOR; aDC: HDC; aRc: PRect; aData: LPARAM): BOOL; stdcall;
 var
+    f: PFindByKey;
     mi: TMonInfoEx;
 begin
     Result := True;   // keep enumerating
-    if gGotOk then
-        Exit;
-    if monitorKeyForMonitor(aMon) = gWantKey then
+    f := PFindByKey(aData);
+    if monitorKeyForMonitor(aMon) = f^.key then
         if infoOf(aMon, mi) then
         begin
-            gGotWork := mi.rcWork;
-            gGotOk := True;
+            f^.work := mi.rcWork;
+            f^.ok := True;
+            Result := False;   // found - stop
         end;
 end;
 
+{*******************************************************************************
+* findMonitorWorkByKey
+*******************************************************************************}
 function findMonitorWorkByKey(const aKey: string; out aWork: TRect): Boolean;
+var
+    f: TFindByKey;
 begin
     Result := False;
     if aKey = '' then
         Exit;
-    gWantKey := aKey;
-    gGotOk := False;
-    EnumDisplayMonitors(0, nil, @findByKeyProc, 0);
-    Result := gGotOk;
+    f.ok := False;
+    f.key := aKey;
+    EnumDisplayMonitors(0, nil, @findByKeyProc, LPARAM(PtrInt(@f)));
+    Result := f.ok;
     if Result then
-        aWork := gGotWork;
+        aWork := f.work;
 end;
 
 end.
