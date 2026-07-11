@@ -23,9 +23,9 @@ type
   message loop starts; that loop pumps the bar's messages. aFullScreen tells the
   bar the window's initial state. When aDevTools is True an extra button is shown
   (dev mode) that calls aDevProc to open the browser dev-tools window.
-  aRestoreStartupGeometry (default True) restores the saved kiosk monitor/state at
-  startup; pass False for a runtime Normal->Kiosk switch, which instead enters
-  fullscreen on the monitor the window is currently on (no jump to another display). }
+  aRestoreStartupGeometry (default True) restores the last-used monitor's kiosk state at
+  startup; pass False for a runtime Normal->Kiosk switch, which instead restores the CURRENT
+  monitor's remembered kiosk state (default fullscreen), never jumping to another display. }
 procedure createControlBar(aMainWindow: HWND; aFullScreen: Boolean;
     aDevTools: Boolean = False; aDevProc: TDevToolsProc = nil;
     aRestoreStartupGeometry: Boolean = True);
@@ -34,9 +34,9 @@ procedure createControlBar(aMainWindow: HWND; aFullScreen: Boolean;
   it is deactivated (hidden and kept from re-showing) — WN-D2. }
 procedure setBarActive(aActive: Boolean);
 
-{ Re-activates kiosk mode from a running Normal window: shows the bar and enters fullscreen
-  kiosk on the monitor the window is currently on (a mode toggle must not move the window to
-  another display). Use when the bar was already created. }
+{ Re-activates kiosk mode from a running Normal window: shows the bar and restores the CURRENT
+  monitor's remembered kiosk state (fullscreen/restored, default fullscreen), never moving the
+  window to another display. Use when the bar was already created. }
 procedure activateKioskBar();
 
 { Registers the handler called when the user Ctrl-clicks the Max button (switch to Normal
@@ -98,74 +98,31 @@ type
     end;
 
 const
-    MONITOR_DEFAULTTONULL = 0;
     MONITOR_DEFAULTTONEAREST = 2;
 
 function MonitorFromWindow(aWnd: HWND; aFlags: DWORD): HMONITOR;
     stdcall; external 'user32' name 'MonitorFromWindow';
 function MonitorFromPoint(aPt: TPoint; aFlags: DWORD): HMONITOR;
     stdcall; external 'user32' name 'MonitorFromPoint';
-function MonitorFromRect(aRect: Pointer; aFlags: DWORD): HMONITOR;
-    stdcall; external 'user32' name 'MonitorFromRect';
 function GetMonitorInfoW(aMonitor: HMONITOR; aInfo: Pointer): BOOL;
     stdcall; external 'user32' name 'GetMonitorInfoW';
 
 {*******************************************************************************
-* rectOnSomeMonitor — True when the rectangle intersects a connected monitor.
-*******************************************************************************}
-function rectOnSomeMonitor(aLeft, aTop, aRight, aBottom: Integer): Boolean;
-var
-    rc: TRect;
-begin
-    rc.Left := aLeft;
-    rc.Top := aTop;
-    rc.Right := aRight;
-    rc.Bottom := aBottom;
-    Result := MonitorFromRect(@rc, MONITOR_DEFAULTTONULL) <> 0;
-end;
-
-{*******************************************************************************
-* windowMonitorRect — rcMonitor of the monitor aWnd is on (primary as fallback).
-*******************************************************************************}
-procedure windowMonitorRect(aWnd: HWND; out aL, aT, aR, aB: Integer);
-var
-    mon: HMONITOR;
-    mi: TMonitorInfo;
-begin
-    mon := MonitorFromWindow(aWnd, MONITOR_DEFAULTTONEAREST);
-    FillChar(mi, SizeOf(mi), 0);
-    mi.cbSize := SizeOf(mi);
-    if GetMonitorInfoW(mon, @mi) then
-    begin
-        aL := mi.rcMonitor.Left;
-        aT := mi.rcMonitor.Top;
-        aR := mi.rcMonitor.Right;
-        aB := mi.rcMonitor.Bottom;
-    end
-    else
-    begin
-        aL := 0;
-        aT := 0;
-        aR := gScreenW;
-        aB := gScreenH;
-    end;
-end;
-
-{*******************************************************************************
 * applyMainGeometry
-* Switches the borderless main window between full screen and a restored size. The
-* target monitor is the one the window sits on (so fullscreen fills the monitor whose
-* bar the user clicked) — except during startup restore, when it is the last-used
-* monitor (gPreferredPt), or the nearest connected one if that monitor is gone.
-* Restored windows get a sizing border (WS_THICKFRAME) and reuse the last geometry.
+* Switches the borderless main window between full screen and a restored size. The target
+* monitor is the one the window sits on (so fullscreen fills the monitor whose bar the user
+* clicked) — except during startup restore, when it is the last-used monitor (gPreferredPt),
+* or the nearest connected one if that monitor is gone. A restored window gets a sizing border
+* (WS_THICKFRAME) and reuses THAT monitor's remembered kiosk rect (remapped across resolution
+* changes, AppWindowState.loadKioskRectFor), else a centred 70% default.
 *******************************************************************************}
 procedure applyMainGeometry(aFull: Boolean);
 var
-    rw, rh: Integer;
-    l, t, r, b: Integer;
-    mL, mT, mW, mH: Integer;
     mon: HMONITOR;
+    rw, rh: Integer;
     mi: TMonitorInfo;
+    mL, mT, mW, mH: Integer;
+    monRect, work, rr: TRect;
 begin
     if gUsePreferredMon then
         mon := MonitorFromPoint(gPreferredPt, MONITOR_DEFAULTTONEAREST)
@@ -175,18 +132,21 @@ begin
     mi.cbSize := SizeOf(mi);
     if GetMonitorInfoW(mon, @mi) then
     begin
-        mL := mi.rcMonitor.Left;
-        mT := mi.rcMonitor.Top;
-        mW := mi.rcMonitor.Right - mi.rcMonitor.Left;
-        mH := mi.rcMonitor.Bottom - mi.rcMonitor.Top;
+        monRect := mi.rcMonitor;
+        work := mi.rcWork;
     end
     else
     begin
-        mL := 0;
-        mT := 0;
-        mW := gScreenW;
-        mH := gScreenH;
+        monRect.Left := 0;
+        monRect.Top := 0;
+        monRect.Right := gScreenW;
+        monRect.Bottom := gScreenH;
+        work := monRect;
     end;
+    mL := monRect.Left;
+    mT := monRect.Top;
+    mW := monRect.Right - monRect.Left;
+    mH := monRect.Bottom - monRect.Top;
 
     if aFull then
     begin
@@ -196,8 +156,9 @@ begin
     else
     begin
         SetWindowLongW(gMainWnd, GWL_STYLE, Integer(WS_POPUP or WS_THICKFRAME or WS_VISIBLE));
-        if loadKioskRect(l, t, r, b) and rectOnSomeMonitor(l, t, r, b) then
-            SetWindowPos(gMainWnd, HWND_TOP, l, t, r - l, b - t, SWP_FRAMECHANGED)
+        if loadKioskRectFor(monRect, work, rr) then
+            SetWindowPos(gMainWnd, HWND_TOP, rr.Left, rr.Top,
+                rr.Right - rr.Left, rr.Bottom - rr.Top, SWP_FRAMECHANGED)
         else
         begin
             rw := (mW * 7) div 10;
@@ -207,17 +168,6 @@ begin
         end;
     end;
     gFull := aFull;
-end;
-
-{*******************************************************************************
-* rememberFullscreenMonitor — records which monitor the fullscreen window is on.
-*******************************************************************************}
-procedure rememberFullscreenMonitor();
-var
-    l, t, r, b: Integer;
-begin
-    windowMonitorRect(gMainWnd, l, t, r, b);
-    saveKioskMon(l, t, r, b);
 end;
 
 {*******************************************************************************
@@ -410,9 +360,7 @@ begin
                         else
                         begin
                             applyMainGeometry(not gFull);
-                            saveKioskFull(gFull);   // remember fullscreen/restored
-                            if gFull then
-                                rememberFullscreenMonitor;
+                            saveKioskState(gMainWnd, gFull);   // per-monitor: full/restored + rect
                             SetForegroundWindow(gMainWnd);
                         end;
                     ID_CLOSE: PostMessageW(gMainWnd, WM_CLOSE, 0, 0);
@@ -454,12 +402,8 @@ end;
 procedure kioskDragEnd();
 begin
     if gFull then
-    begin
-        applyMainGeometry(True);      // dragged to another monitor -> fill it
-        rememberFullscreenMonitor;    // and remember that monitor
-    end
-    else
-        saveKioskRect(gMainWnd);      // remember the moved/resized restored geometry
+        applyMainGeometry(True);           // dragged to another monitor -> fill it
+    saveKioskState(gMainWnd, gFull);       // remember this monitor's kiosk state (full + rect)
 end;
 
 {*******************************************************************************
@@ -473,9 +417,11 @@ procedure kioskDisplayChange();
 begin
     if gFull then
     begin
-        applyMainGeometry(True);
-        rememberFullscreenMonitor;
+        applyMainGeometry(True);           // re-fill the nearest surviving monitor
+        saveKioskState(gMainWnd, True);    // and record it (per monitor)
     end;
+    // Restored kiosk: left where the OS put it; its saved per-monitor rect is not overwritten
+    // (a display change is not a user action).
 end;
 
 {*******************************************************************************
@@ -502,12 +448,12 @@ procedure createControlBar(aMainWindow: HWND; aFullScreen: Boolean;
     aDevTools: Boolean = False; aDevProc: TDevToolsProc = nil;
     aRestoreStartupGeometry: Boolean = True);
 var
-    wc: WNDCLASSEXW;
+    pt: TPoint;
     inst: HINST;
     font: HGDIOBJ;
-    savedFull: Boolean;
-    ml, mt, mr, mb: Integer;
+    wc: WNDCLASSEXW;
     nx, cnt: Integer;
+    savedFull: Boolean;
 begin
     gMainWnd := aMainWindow;
     gFull := aFullScreen;
@@ -576,22 +522,15 @@ begin
 
     if aRestoreStartupGeometry then
     begin
-        // Startup: honour the saved fullscreen/restored state and restore onto the
-        // last-used monitor, re-asserting for ~1s (34 * 30ms) to win over the webview's
-        // own startup resize of the host window. gPreferredPt is a point on that monitor;
-        // if it is now disconnected, MonitorFromPoint/NEAREST resolves to the nearest
-        // connected one (the first available), keeping the saved mode.
-        if loadKioskFull(savedFull) then
+        // Startup: open the kiosk on the last-used monitor in the sub-state remembered for it
+        // (fullscreen/restored). resolveKioskStartup gives a point on that monitor + the flag;
+        // applyMainGeometry then fills it (fullscreen) or restores that monitor's kiosk rect.
+        // Re-assert for ~1s (34 * 30ms) to win over the webview's own startup resize; if the
+        // monitor is disconnected, MonitorFromPoint/NEAREST falls back to the nearest one.
+        if resolveKioskStartup(pt, savedFull) then
+        begin
             gFull := savedFull;
-        if gFull and loadKioskMon(ml, mt, mr, mb) then
-        begin
-            gPreferredPt.X := (ml + mr) div 2;
-            gPreferredPt.Y := (mt + mb) div 2;
-        end
-        else if (not gFull) and loadKioskRect(ml, mt, mr, mb) then
-        begin
-            gPreferredPt.X := (ml + mr) div 2;
-            gPreferredPt.Y := (mt + mb) div 2;
+            gPreferredPt := pt;
         end
         else
         begin
@@ -603,21 +542,20 @@ begin
     end
     else
     begin
-        // Runtime Normal->Kiosk switch: enter fullscreen kiosk on the monitor the window
-        // is CURRENTLY on (never the stale saved kiosk monitor), so a mode toggle does not
-        // teleport the window to another display. No re-assert loop needed — the webview's
-        // one-shot startup resize is long past.
-        gFull := True;
+        // Runtime Normal->Kiosk switch: re-enter kiosk on the monitor the window is CURRENTLY
+        // on (never a stale saved monitor), restoring THAT monitor's remembered kiosk sub-state
+        // (fullscreen/restored); default fullscreen when it has none. No re-assert loop needed.
         gUsePreferredMon := False;
         gAssertTicks := 0;
-        saveKioskFull(True);
+        if not loadKioskFullFor(gMainWnd, gFull) then
+            gFull := True;
     end;
-    // Apply the resolved geometry synchronously so a caller can position the (still
-    // hidden) window on the correct monitor BEFORE showing it — no flash on the primary
-    // monitor. The startup timer re-asserts it for ~1s as a safety net.
+    // Apply the resolved geometry synchronously so a caller can position the (still hidden)
+    // window on the correct monitor BEFORE showing it — no flash on the primary monitor. The
+    // startup timer re-asserts it for ~1s as a safety net.
     applyMainGeometry(gFull);
     if not aRestoreStartupGeometry then
-        rememberFullscreenMonitor;   // record the current monitor as the kiosk monitor
+        saveKioskState(gMainWnd, gFull);   // record the runtime switch (this monitor + lastmon)
 end;
 
 {*******************************************************************************
@@ -632,20 +570,20 @@ begin
 end;
 
 {*******************************************************************************
-* activateKioskBar — re-enter kiosk from Normal: mark the tracker kiosk and enter fullscreen
-* on the monitor the window is CURRENTLY on (gUsePreferredMon False), never the stale saved
-* kiosk monitor, so a mode toggle does not move the window to another display. updateBar
-* shows the bar again on the next tick.
+* activateKioskBar — re-enter kiosk from Normal: mark the tracker kiosk and restore the
+* CURRENT monitor's remembered kiosk sub-state (fullscreen/restored, default fullscreen) on
+* the monitor the window is on (gUsePreferredMon False), never a stale saved monitor, so a
+* mode toggle does not move the window to another display. updateBar shows the bar next tick.
 *******************************************************************************}
 procedure activateKioskBar();
 begin
     gBarActive := True;
-    gFull := True;               // a mode toggle enters fullscreen kiosk...
-    gUsePreferredMon := False;   // ...on the monitor the window is currently on
+    gUsePreferredMon := False;   // the monitor the window is currently on
+    if not loadKioskFullFor(gMainWnd, gFull) then
+        gFull := True;           // default fullscreen when this monitor has no kiosk state
     setTrackMode(wmKiosk);
-    applyMainGeometry(True);
-    saveKioskFull(True);
-    rememberFullscreenMonitor;
+    applyMainGeometry(gFull);
+    saveKioskState(gMainWnd, gFull);
 end;
 
 {*******************************************************************************

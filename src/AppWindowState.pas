@@ -31,10 +31,15 @@ type
                                            AppMonitors)
     mon.<key>.work=<l t r b>             - that monitor's work area at save time, so a
                                            resolution change of the same monitor is detected
-    lastmon=<key>                        - which monitor to open on at startup
-    win=/winmon=                         - legacy single-slot geometry (pre-per-monitor);
-                                           still read as a fallback for old state files
-    kioskfull=<0|1>                      - fullscreen(1) / restored(0) for kiosk mode
+    mon.<key>.kioskfull=<0|1>            - kiosk fullscreen(1)/restored(0), PER monitor (the
+                                           kiosk counterpart of mon.<key>.win)
+    mon.<key>.kioskrect=<l t r b>        - the restored (non-fullscreen) kiosk rect for that
+                                           monitor (screen coordinates)
+    mon.<key>.kioskwork=<l t r b>        - that monitor's work area when the kiosk rect was
+                                           saved (its own remap baseline, apart from .work)
+    lastmon=<key>                        - which monitor to open on at startup (either mode)
+    win=/winmon=, kioskfull/kioskmon/    - legacy single-slot geometry (pre-per-monitor);
+      kioskrect                            still read as a fallback for old state files
 
   Save model: geometry is CAPTURED into an in-memory cache on settle events (drag/resize
   end, maximize/restore, monitor arrival) and PERSISTED in one batched file write; saves
@@ -67,12 +72,16 @@ procedure endPlacementChange();
 function remapNormalRect(const aSavedWin, aSavedMon, aTargetWork: TRect): TRect;
 procedure saveDispMode(const aMode: string);
 function loadDispMode(out aMode: string): Boolean;
-procedure saveKioskFull(aFull: Boolean);
-function loadKioskFull(out aFull: Boolean): Boolean;
-procedure saveKioskRect(aWnd: HWND);
-function loadKioskRect(out aLeft, aTop, aRight, aBottom: Integer): Boolean;
-procedure saveKioskMon(aLeft, aTop, aRight, aBottom: Integer);
-function loadKioskMon(out aLeft, aTop, aRight, aBottom: Integer): Boolean;
+{ Per-monitor kiosk state (parallels the Normal mon.<key>.win state): remembers the
+  fullscreen/restored sub-state and the restored rect for EACH monitor, so switching modes or
+  arriving on a monitor restores that monitor's own kiosk layout, remapped across resolution
+  changes. saveKioskState captures the current placement; loadKioskFullFor / loadKioskRectFor
+  read a monitor's remembered sub-state / rect; resolveKioskStartup picks the startup monitor
+  and flag. All fall back to the legacy single-slot keys for old state files. }
+procedure saveKioskState(aWnd: HWND; aFull: Boolean);
+function loadKioskFullFor(aWnd: HWND; out aFull: Boolean): Boolean;
+function loadKioskRectFor(const aMonRect, aTargetWork: TRect; out aRect: TRect): Boolean;
+function resolveKioskStartup(out aPt: TPoint; out aFull: Boolean): Boolean;
 
 implementation
 
@@ -936,7 +945,7 @@ begin
                     if Assigned(gKioskDragEnd) then
                         gKioskDragEnd()
                     else
-                        saveKioskRect(aWnd);
+                        saveKioskState(aWnd, False);
                 end;
             WM_DISPLAYCHANGE:
                 // Kiosk: re-fill the monitor when fullscreen; a restored kiosk window is
@@ -1047,16 +1056,9 @@ begin
 end;
 
 {*******************************************************************************
-* saveKioskFull / loadKioskFull — persist the kiosk fullscreen/restored toggle.
+* loadKioskFull / loadKioskRect / loadKioskMon — LEGACY single-slot readers (pre-per-monitor
+* state files). Consulted only as a fallback by the per-monitor kiosk functions below.
 *******************************************************************************}
-procedure saveKioskFull(aFull: Boolean);
-begin
-    if aFull then
-        setStateValue('kioskfull', '1')
-    else
-        setStateValue('kioskfull', '0');
-end;
-
 function loadKioskFull(out aFull: Boolean): Boolean;
 var
     v: string;
@@ -1064,17 +1066,6 @@ begin
     Result := readValue('kioskfull', v);
     if Result then
         aFull := (Trim(v) = '1');
-end;
-
-{*******************************************************************************
-* saveKioskRect / loadKioskRect — the restored (non-fullscreen) kiosk geometry.
-*******************************************************************************}
-procedure saveKioskRect(aWnd: HWND);
-var
-    r: TRect;
-begin
-    if (aWnd <> 0) and GetWindowRect(aWnd, r) then
-        setStateValue('kioskrect', rectStr(r));
 end;
 
 function loadKioskRect(out aLeft, aTop, aRight, aBottom: Integer): Boolean;
@@ -1093,15 +1084,6 @@ begin
     Result := True;
 end;
 
-{*******************************************************************************
-* saveKioskMon / loadKioskMon — rectangle of the monitor a fullscreen kiosk window
-* was on (used to restore it to the same monitor, or the nearest one if gone).
-*******************************************************************************}
-procedure saveKioskMon(aLeft, aTop, aRight, aBottom: Integer);
-begin
-    setStateValue('kioskmon', Format('%d %d %d %d', [aLeft, aTop, aRight, aBottom]));
-end;
-
 function loadKioskMon(out aLeft, aTop, aRight, aBottom: Integer): Boolean;
 var
     rest: string;
@@ -1114,6 +1096,138 @@ begin
             and nextInt(rest, aRight) and nextInt(rest, aBottom)) then
         Exit;
     Result := (aRight > aLeft) and (aBottom > aTop);
+end;
+
+{*******************************************************************************
+* saveKioskState — persists the kiosk placement for the monitor aWnd is on, per monitor: the
+* fullscreen/restored flag, the restored rect (when not fullscreen), that monitor's work area
+* (its remap baseline), and marks it the last-used monitor. One batched write.
+*******************************************************************************}
+procedure saveKioskState(aWnd: HWND; aFull: Boolean);
+var
+    key: string;
+    r, work: TRect;
+begin
+    if (aWnd = 0) or (not IsWindow(aWnd)) then
+        Exit;
+    key := monitorKeyForWindow(aWnd);
+    if key = '' then
+        Exit;
+    work := monitorWorkAreaForWindow(aWnd);
+    if aFull then
+        setStateValues(
+            ['mon.' + key + '.kioskfull', 'mon.' + key + '.kioskwork', 'lastmon'],
+            ['1', rectStr(work), key])
+    else if GetWindowRect(aWnd, r) then
+        setStateValues(
+            ['mon.' + key + '.kioskfull', 'mon.' + key + '.kioskrect',
+             'mon.' + key + '.kioskwork', 'lastmon'],
+            ['0', rectStr(r), rectStr(work), key])
+    else
+        setStateValues(
+            ['mon.' + key + '.kioskfull', 'mon.' + key + '.kioskwork', 'lastmon'],
+            ['0', rectStr(work), key]);
+end;
+
+{*******************************************************************************
+* loadKioskFullFor — the kiosk fullscreen/restored flag remembered for the monitor aWnd is
+* on; falls back to the legacy single-slot key. False when neither is present.
+*******************************************************************************}
+function loadKioskFullFor(aWnd: HWND; out aFull: Boolean): Boolean;
+var
+    key, v: string;
+begin
+    key := monitorKeyForWindow(aWnd);
+    if (key <> '') and readValue('mon.' + key + '.kioskfull', v) then
+    begin
+        aFull := Trim(v) = '1';
+        Result := True;
+    end
+    else
+        Result := loadKioskFull(aFull);
+end;
+
+{*******************************************************************************
+* loadKioskRectFor — the restored-kiosk rect remembered for the monitor covering aMonRect,
+* remapped to aTargetWork if that monitor changed resolution, then clamped inside it. Falls
+* back to the legacy single-slot rect. False when neither is present (caller centres).
+*******************************************************************************}
+function loadKioskRectFor(const aMonRect, aTargetWork: TRect; out aRect: TRect): Boolean;
+var
+    saved, work: TRect;
+    key, rs, ws: string;
+    l, t, r, b: Integer;
+begin
+    Result := False;
+    key := monitorKeyForRect(aMonRect);
+    if (key <> '') and readValue('mon.' + key + '.kioskrect', rs) and parseRect(rs, saved) then
+    begin
+        if readValue('mon.' + key + '.kioskwork', ws) and parseRect(ws, work)
+            and (not rectsEqual(work, aTargetWork)) then
+            aRect := remapNormalRect(saved, work, aTargetWork)
+        else
+            aRect := saved;
+        clampRect(aRect, aTargetWork);
+        Exit(True);
+    end;
+    if loadKioskRect(l, t, r, b) then       // legacy single-slot fallback
+    begin
+        aRect := mkRect(l, t, r, b);
+        clampRect(aRect, aTargetWork);
+        Result := True;
+    end;
+end;
+
+{*******************************************************************************
+* resolveKioskStartup — where to open the kiosk at startup: a point on the monitor to open on
+* (its centre) plus the fullscreen/restored flag remembered for it. Uses the last-used
+* monitor's per-monitor state, else the legacy single-slot keys. False when there is no kiosk
+* state at all (caller defaults to fullscreen on the primary monitor).
+*******************************************************************************}
+function resolveKioskStartup(out aPt: TPoint; out aFull: Boolean): Boolean;
+var
+    work: TRect;
+    lastKey, v: string;
+    l, t, r, b: Integer;
+
+    procedure centerOf(const aRect: TRect);
+    begin
+        aPt.X := (aRect.Left + aRect.Right) div 2;
+        aPt.Y := (aRect.Top + aRect.Bottom) div 2;
+    end;
+
+    procedure primaryCenter();
+    begin
+        aPt.X := GetSystemMetrics(SM_CXSCREEN) div 2;
+        aPt.Y := GetSystemMetrics(SM_CYSCREEN) div 2;
+    end;
+
+begin
+    Result := False;
+    aFull := True;
+    if readValue('lastmon', lastKey) then
+    begin
+        lastKey := Trim(lastKey);
+        if readValue('mon.' + lastKey + '.kioskfull', v) then
+        begin
+            aFull := Trim(v) = '1';
+            if findMonitorWorkByKey(lastKey, work) then
+                centerOf(work)
+            else
+                primaryCenter();
+            Exit(True);
+        end;
+    end;
+    if loadKioskFull(aFull) then            // legacy single-slot fallback
+    begin
+        if aFull and loadKioskMon(l, t, r, b) then
+            centerOf(mkRect(l, t, r, b))
+        else if (not aFull) and loadKioskRect(l, t, r, b) then
+            centerOf(mkRect(l, t, r, b))
+        else
+            primaryCenter();
+        Result := True;
+    end;
 end;
 
 end.
