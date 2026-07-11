@@ -344,19 +344,21 @@ begin
         try
             setBarActive(False);          // hide the floating control bar (WN-D2)
             setTrackMode(wmNormal);
-            applyNormalStyle(gMainWnd);   // OS-decorated frame
-            // A session that only ever showed a caption-less kiosk (WS_POPUP) window never
-            // realised the title-bar icon. Set it now and force the frame to repaint so the
-            // new caption shows it: a WM_SETICON on an already-visible window does not, by
-            // itself, repaint the caption -- which is why setting it AFTER the placement
-            // below left the caption blank whenever the app had STARTED in kiosk mode.
+            // Reveal the Normal frame the SAME way a Normal START does (showMainWindow) -- the
+            // one path where the title-bar icon reliably appears: HIDE the window, set the icon
+            // while there is no caption yet, apply the OS-decorated frame, then ShowWindow below
+            // realises the caption WITH the icon. Merely re-framing a still-visible kiosk
+            // (WS_POPUP) window and re-asserting WM_SETICON does NOT rebuild the caption, so its
+            // icon stayed blank whenever the app had STARTED in kiosk mode.
+            ShowWindow(gMainWnd, SW_HIDE);
             applyWindowIcons(gMainWnd, brandIconBig, brandIconSmall);
-            SetWindowPos(gMainWnd, 0, 0, 0, 0, 0,
-                SWP_NOMOVE or SWP_NOSIZE or SWP_NOZORDER or SWP_NOACTIVATE or SWP_FRAMECHANGED);
+            applyNormalStyle(gMainWnd);   // OS-decorated frame
         finally
             endPlacementChange;
         end;
-        applyNormalPlacement(gMainWnd);
+        applyNormalPlacement(gMainWnd);   // position/size the still-hidden window
+        if not IsWindowVisible(gMainWnd) then
+            ShowWindow(gMainWnd, SW_SHOW); // reveal -> caption realised with the icon
         addSystemMenuItems(gMainWnd);     // "toggle mode" + DevTools items (WN2.2)
     end
     else
