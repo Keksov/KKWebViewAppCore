@@ -61,6 +61,8 @@ const
 
 function SHGetPropertyStoreForWindow(aWnd: HWND; const aRiid: TGUID; out aPpv): HResult; stdcall;
     external 'shell32' name 'SHGetPropertyStoreForWindow';
+function ExtractIconExW(aFile: PWideChar; aIndex: Integer;
+    var aLarge, aSmall: HICON; aCount: UINT): UINT; stdcall; external 'shell32' name 'ExtractIconExW';
 
 {*******************************************************************************
 * readFileUtf8 — reads aPath as raw bytes, strips a UTF-8 BOM, returns UTF-16.
@@ -156,6 +158,35 @@ begin
 end;
 
 {*******************************************************************************
+* fallbackIcons — fills any icon still 0 (no AppCore.ico found) so the window ALWAYS has an
+* explicit icon: the exe's own embedded icon (present in stamped deployments), else the
+* system default application icon. Rationale: a window with no explicit WM_SETICON icon
+* relies on Windows' default caption glyph, which is drawn on a fresh ShowWindow but left
+* BLANK when a caption-less kiosk (WS_POPUP) window later gains a caption (kiosk start ->
+* Normal switch). An explicit icon renders consistently in both paths.
+*******************************************************************************}
+procedure fallbackIcons(var aIconBig, aIconSmall: HICON);
+const
+    IDI_APPLICATION_W = 32512;
+var
+    exeBig, exeSmall: HICON;
+begin
+    exeBig := 0;
+    exeSmall := 0;
+    ExtractIconExW(PWideChar(UnicodeString(ParamStr(0))), 0, exeBig, exeSmall, 1);
+    if aIconBig = 0 then
+        if exeBig <> 0 then
+            aIconBig := exeBig
+        else
+            aIconBig := LoadIconW(0, MakeIntResourceW(IDI_APPLICATION_W));
+    if aIconSmall = 0 then
+        if exeSmall <> 0 then
+            aIconSmall := exeSmall
+        else
+            aIconSmall := LoadIconW(0, MakeIntResourceW(IDI_APPLICATION_W));
+end;
+
+{*******************************************************************************
 * loadBranding
 *******************************************************************************}
 procedure loadBranding(out aTitle: string; out aIconBig, aIconSmall: HICON);
@@ -195,6 +226,11 @@ begin
         if usedTemp then
             DeleteFileW(PWideChar(UnicodeString(icoPath)));
     end;
+
+    // No AppCore.ico (e.g. the bare bin AppMain.exe): fall back to the exe's own icon or the
+    // system default, so the caption always has an explicit icon and never renders blank.
+    if (aIconBig = 0) or (aIconSmall = 0) then
+        fallbackIcons(aIconBig, aIconSmall);
 end;
 
 {*******************************************************************************
