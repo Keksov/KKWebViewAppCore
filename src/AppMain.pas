@@ -605,16 +605,19 @@ begin
         profMark('autoupdate-checked');
         gConfig := cfg;                    // SplashLang for the splash title / tr()
         gDevMode := cfg.Mode = amDev;      // enables DevTools + the bar button
-        // Mode precedence (WN-D6): -FullScreen forces Kiosk; else a previously saved
-        // display mode wins (a runtime Kiosk<->Normal switch persists); else the
-        // deployment default cfg.FullScreen (true = Kiosk for kiosk deployments).
-        if not fullScreenForced then
-        begin
-            if loadDispMode(savedMode) then
-                useFullScreen := (windowModeFromString(savedMode, wmKiosk) = wmKiosk)
-            else
-                useFullScreen := cfg.FullScreen;
-        end;
+    end;
+
+    // Mode precedence (WN-D6), resolved even WITHOUT a config so a bare AppMain.exe still
+    // honours the last runtime Kiosk<->Normal switch persisted in AppCore.window (the state
+    // file is written regardless of a config, so it must be read regardless too):
+    //   -FullScreen forces Kiosk; else the saved dispmode wins; else, only when a config is
+    //   present, the deployment default cfg.FullScreen; else Normal (the bare-launch default).
+    if not fullScreenForced then
+    begin
+        if loadDispMode(savedMode) then
+            useFullScreen := (windowModeFromString(savedMode, wmKiosk) = wmKiosk)
+        else if useServices then
+            useFullScreen := cfg.FullScreen;
     end;
 
     gUseFullScreen := useFullScreen;
