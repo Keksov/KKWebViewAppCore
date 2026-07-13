@@ -1,0 +1,450 @@
+diff --git a/core/include/webview/detail/backends/win32_edge.hh b/core/include/webview/detail/backends/win32_edge.hh
+index 316a9d5..b066718 100644
+--- a/core/include/webview/detail/backends/win32_edge.hh
++++ b/core/include/webview/detail/backends/win32_edge.hh
+@@ -291,6 +291,407 @@ private:
+   std::atomic<ULONG> m_ref_count{1};
+ };
+ 
++// ---------------------------------------------------------------------------
++// AppCore patch (KKMindWave panel-window, owner req. 2026-07-13): handle
++// NewWindowRequested so window.open() popups get a PLAIN native window (title
++// bar only) instead of WebView2's default popup with its browser address bar.
++// The popup hosts a controller created from the SAME environment (same
++// profile & browser process), so the opener<->popup web platform
++// (BroadcastChannel, localStorage, window.close()) behaves exactly like the
++// default popup did.
++// ---------------------------------------------------------------------------
++
++// Adapter for popup events that share the (ICoreWebView2*, IUnknown*) Invoke
++// signature (DocumentTitleChanged / WindowCloseRequested).
++template <typename THandler>
++class webview2_popup_event_handler final : public THandler {
++public:
++  webview2_popup_event_handler(REFIID iid, std::function<void()> cb)
++      : m_iid(iid), m_cb(cb) {}
++
++  webview2_popup_event_handler(const webview2_popup_event_handler &) = delete;
++  webview2_popup_event_handler &
++  operator=(const webview2_popup_event_handler &) = delete;
++
++  ULONG STDMETHODCALLTYPE AddRef() { return ++m_ref_count; }
++  ULONG STDMETHODCALLTYPE Release() {
++    if (m_ref_count > 1) {
++      return --m_ref_count;
++    }
++    delete this;
++    return 0;
++  }
++  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, LPVOID *ppv) {
++    if (!ppv) {
++      return E_POINTER;
++    }
++    if (IsEqualIID(riid, m_iid) || IsEqualIID(riid, IID_IUnknown)) {
++      *ppv = this;
++      AddRef();
++      return S_OK;
++    }
++    return E_NOINTERFACE;
++  }
++  HRESULT STDMETHODCALLTYPE Invoke(ICoreWebView2 * /*sender*/,
++                                   IUnknown * /*args*/) {
++    m_cb();
++    return S_OK;
++  }
++
++private:
++  IID m_iid;
++  std::function<void()> m_cb;
++  std::atomic<ULONG> m_ref_count{1};
++};
++
++// One popup window: a bare WS_OVERLAPPEDWINDOW whose client area is filled by
++// a WebView2 controller. The object is COM-refcounted (it is the controller
++// completion handler); the HWND owns one reference and drops it on
++// WM_DESTROY. window.close() from inside the popup maps to DestroyWindow via
++// WindowCloseRequested; document.title drives the native caption.
++class webview2_popup_window
++    : public ICoreWebView2CreateCoreWebView2ControllerCompletedHandler {
++public:
++  // Handles one NewWindowRequested. Returns false if the request could not be
++  // taken over (the caller then leaves it to the default popup).
++  static bool open(ICoreWebView2 *sender,
++                   ICoreWebView2NewWindowRequestedEventArgs *args,
++                   HWND opener) {
++    ICoreWebView2Environment *env = nullptr;
++    ICoreWebView2_2 *sender2 = nullptr;
++    if (FAILED(sender->QueryInterface(IID_ICoreWebView2_2,
++                                      reinterpret_cast<void **>(&sender2))) ||
++        !sender2) {
++      return false;
++    }
++    auto env_res = sender2->get_Environment(&env);
++    sender2->Release();
++    if (FAILED(env_res) || !env) {
++      return false;
++    }
++    auto *popup = new webview2_popup_window(opener);
++    if (!popup->create_window(args)) {
++      env->Release();
++      popup->Release();
++      return false;
++    }
++    auto create_res = env->CreateCoreWebView2Controller(popup->m_hwnd, popup);
++    env->Release();
++    if (FAILED(create_res)) {
++      // The request is already marked handled + deferred: complete it empty
++      // and drop the dead window (nothing opens; extremely unlikely path).
++      DestroyWindow(popup->m_hwnd);
++      return true;
++    }
++    return true;
++  }
++
++  webview2_popup_window(const webview2_popup_window &) = delete;
++  webview2_popup_window &operator=(const webview2_popup_window &) = delete;
++
++  ULONG STDMETHODCALLTYPE AddRef() { return ++m_ref_count; }
++  ULONG STDMETHODCALLTYPE Release() {
++    if (m_ref_count > 1) {
++      return --m_ref_count;
++    }
++    delete this;
++    return 0;
++  }
++  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, LPVOID *ppv) {
++    if (!ppv) {
++      return E_POINTER;
++    }
++    if (IsEqualIID(riid,
++                   IID_ICoreWebView2CreateCoreWebView2ControllerCompletedHandler) ||
++        IsEqualIID(riid, IID_IUnknown)) {
++      *ppv = this;
++      AddRef();
++      return S_OK;
++    }
++    return E_NOINTERFACE;
++  }
++
++  // Controller creation completed.
++  HRESULT STDMETHODCALLTYPE Invoke(HRESULT res,
++                                   ICoreWebView2Controller *controller) {
++    if (FAILED(res) || !controller || !m_hwnd) {
++      complete_request();
++      if (m_hwnd) {
++        DestroyWindow(m_hwnd);
++      }
++      return S_OK;
++    }
++    controller->AddRef();
++    m_controller = controller;
++    controller->get_CoreWebView2(&m_webview);
++    if (m_webview) {
++      ICoreWebView2Settings *settings = nullptr;
++      if (SUCCEEDED(m_webview->get_Settings(&settings)) && settings) {
++        settings->put_IsStatusBarEnabled(FALSE);
++        settings->Release();
++      }
++      ::EventRegistrationToken token;
++      auto *title_handler = new webview2_popup_event_handler<
++          ICoreWebView2DocumentTitleChangedEventHandler>(
++          IID_ICoreWebView2DocumentTitleChangedEventHandler,
++          [this] { update_title(); });
++      m_webview->add_DocumentTitleChanged(title_handler, &token);
++      // On success the runtime holds its own reference; on failure this frees.
++      title_handler->Release();
++      auto *close_handler = new webview2_popup_event_handler<
++          ICoreWebView2WindowCloseRequestedEventHandler>(
++          IID_ICoreWebView2WindowCloseRequestedEventHandler, [this] {
++            if (m_hwnd) {
++              DestroyWindow(m_hwnd);
++            }
++          });
++      m_webview->add_WindowCloseRequested(close_handler, &token);
++      close_handler->Release();
++      if (m_args) {
++        m_args->put_NewWindow(m_webview);
++      }
++    }
++    complete_request();
++    resize_webview();
++    m_controller->put_IsVisible(TRUE);
++    ShowWindow(m_hwnd, SW_SHOW);
++    UpdateWindow(m_hwnd);
++    m_controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
++    return S_OK;
++  }
++
++private:
++  explicit webview2_popup_window(HWND opener) : m_opener(opener) {}
++  virtual ~webview2_popup_window() = default;
++
++  static const wchar_t *popup_class_name() { return L"appcore_webview_popup"; }
++
++  static void register_window_class(HINSTANCE hInstance) {
++    static bool registered = false;
++    if (registered) {
++      return;
++    }
++    registered = true;
++    WNDCLASSEXW wc{};
++    wc.cbSize = sizeof(WNDCLASSEX);
++    wc.hInstance = hInstance;
++    wc.lpszClassName = popup_class_name();
++    wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
++    wc.lpfnWndProc =
++        (WNDPROC)(+[](HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) -> LRESULT {
++          webview2_popup_window *w{};
++          if (msg == WM_NCCREATE) {
++            auto *lpcs{reinterpret_cast<LPCREATESTRUCT>(lp)};
++            w = static_cast<webview2_popup_window *>(lpcs->lpCreateParams);
++            w->m_hwnd = hwnd;
++            SetWindowLongPtrW(hwnd, GWLP_USERDATA,
++                              reinterpret_cast<LONG_PTR>(w));
++            enable_non_client_dpi_scaling_if_needed(hwnd);
++            apply_window_theme(hwnd);
++          } else {
++            w = reinterpret_cast<webview2_popup_window *>(
++                GetWindowLongPtrW(hwnd, GWLP_USERDATA));
++          }
++          if (!w) {
++            return DefWindowProcW(hwnd, msg, wp, lp);
++          }
++          switch (msg) {
++          case WM_SIZE:
++            w->resize_webview();
++            break;
++          case WM_CLOSE:
++            DestroyWindow(hwnd);
++            break;
++          case WM_ACTIVATE:
++            if (LOWORD(wp) != WA_INACTIVE && w->m_controller) {
++              w->m_controller->MoveFocus(
++                  COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
++            }
++            break;
++          case WM_DESTROY:
++            SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
++            w->m_hwnd = nullptr;
++            w->cleanup();
++            w->Release(); // the window's reference
++            break;
++          default:
++            return DefWindowProcW(hwnd, msg, wp, lp);
++          }
++          return 0;
++        });
++    RegisterClassExW(&wc);
++  }
++
++  bool create_window(ICoreWebView2NewWindowRequestedEventArgs *args) {
++    HINSTANCE hInstance = GetModuleHandle(nullptr);
++    register_window_class(hInstance);
++
++    // Honor window.open features (best-effort; sizes are content-area px).
++    int left = CW_USEDEFAULT;
++    int top = CW_USEDEFAULT;
++    int width = 900;
++    int height = 600;
++    bool has_position = false;
++    ICoreWebView2WindowFeatures *features = nullptr;
++    if (SUCCEEDED(args->get_WindowFeatures(&features)) && features) {
++      BOOL has{};
++      UINT32 value{};
++      if (SUCCEEDED(features->get_HasSize(&has)) && has) {
++        if (SUCCEEDED(features->get_Width(&value)) && value > 0) {
++          width = static_cast<int>(value);
++        }
++        if (SUCCEEDED(features->get_Height(&value)) && value > 0) {
++          height = static_cast<int>(value);
++        }
++      }
++      if (SUCCEEDED(features->get_HasPosition(&has)) && has) {
++        has_position = true;
++        if (SUCCEEDED(features->get_Left(&value))) {
++          left = static_cast<int>(value);
++        }
++        if (SUCCEEDED(features->get_Top(&value))) {
++          top = static_cast<int>(value);
++        }
++      }
++      features->Release();
++    }
++    RECT frame{0, 0, width, height};
++    AdjustWindowRect(&frame, WS_OVERLAPPEDWINDOW, FALSE);
++
++    CreateWindowExW(0, popup_class_name(), L"", WS_OVERLAPPEDWINDOW,
++                    has_position ? left : CW_USEDEFAULT,
++                    has_position ? top : CW_USEDEFAULT,
++                    frame.right - frame.left, frame.bottom - frame.top,
++                    nullptr, nullptr, hInstance, this);
++    if (!m_hwnd) {
++      return false;
++    }
++
++    // Inherit the opener's branded icons (AppCore sets them via WM_SETICON).
++    if (m_opener) {
++      auto big = SendMessageW(m_opener, WM_GETICON, ICON_BIG, 0);
++      auto small = SendMessageW(m_opener, WM_GETICON, ICON_SMALL, 0);
++      if (big) {
++        SendMessageW(m_hwnd, WM_SETICON, ICON_BIG, big);
++      }
++      if (small) {
++        SendMessageW(m_hwnd, WM_SETICON, ICON_SMALL, small);
++      }
++    }
++
++    // Take the request over: suppress the default popup and keep the request
++    // alive until our controller is ready to be handed back as NewWindow.
++    args->put_Handled(TRUE);
++    m_args = args;
++    m_args->AddRef();
++    if (FAILED(args->GetDeferral(&m_deferral))) {
++      m_deferral = nullptr;
++    }
++    return true;
++  }
++
++  void complete_request() {
++    if (m_args && m_deferral) {
++      // NewWindow was set by Invoke when the controller came up; completing
++      // without it just cancels the request (default popup stays suppressed).
++    }
++    if (m_deferral) {
++      m_deferral->Complete();
++      m_deferral->Release();
++      m_deferral = nullptr;
++    }
++    if (m_args) {
++      m_args->Release();
++      m_args = nullptr;
++    }
++  }
++
++  void cleanup() {
++    complete_request();
++    if (m_controller) {
++      m_controller->Close();
++      m_controller->Release();
++      m_controller = nullptr;
++    }
++    if (m_webview) {
++      m_webview->Release();
++      m_webview = nullptr;
++    }
++  }
++
++  void resize_webview() {
++    if (m_hwnd && m_controller) {
++      RECT bounds{};
++      if (GetClientRect(m_hwnd, &bounds)) {
++        m_controller->put_Bounds(bounds);
++      }
++    }
++  }
++
++  void update_title() {
++    if (!m_webview || !m_hwnd) {
++      return;
++    }
++    LPWSTR title = nullptr;
++    if (SUCCEEDED(m_webview->get_DocumentTitle(&title)) && title) {
++      SetWindowTextW(m_hwnd, title);
++      CoTaskMemFree(title);
++    }
++  }
++
++  HWND m_opener = nullptr;
++  HWND m_hwnd = nullptr;
++  ICoreWebView2Controller *m_controller = nullptr;
++  ICoreWebView2 *m_webview = nullptr;
++  ICoreWebView2NewWindowRequestedEventArgs *m_args = nullptr;
++  ICoreWebView2Deferral *m_deferral = nullptr;
++  std::atomic<ULONG> m_ref_count{1};
++};
++
++// Subscribed on the main webview; each window.open() spawns one
++// webview2_popup_window. On any takeover failure the request is left to the
++// default popup so the user never loses the window entirely.
++class webview2_new_window_handler final
++    : public ICoreWebView2NewWindowRequestedEventHandler {
++public:
++  explicit webview2_new_window_handler(HWND opener) : m_opener(opener) {}
++
++  webview2_new_window_handler(const webview2_new_window_handler &) = delete;
++  webview2_new_window_handler &
++  operator=(const webview2_new_window_handler &) = delete;
++
++  ULONG STDMETHODCALLTYPE AddRef() { return ++m_ref_count; }
++  ULONG STDMETHODCALLTYPE Release() {
++    if (m_ref_count > 1) {
++      return --m_ref_count;
++    }
++    delete this;
++    return 0;
++  }
++  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, LPVOID *ppv) {
++    if (!ppv) {
++      return E_POINTER;
++    }
++    if (IsEqualIID(riid, IID_ICoreWebView2NewWindowRequestedEventHandler) ||
++        IsEqualIID(riid, IID_IUnknown)) {
++      *ppv = this;
++      AddRef();
++      return S_OK;
++    }
++    return E_NOINTERFACE;
++  }
++  HRESULT STDMETHODCALLTYPE
++  Invoke(ICoreWebView2 *sender,
++         ICoreWebView2NewWindowRequestedEventArgs *args) {
++    webview2_popup_window::open(sender, args, m_opener);
++    return S_OK;
++  }
++
++private:
++  HWND m_opener = nullptr;
++  std::atomic<ULONG> m_ref_count{1};
++};
++
+ class user_script::impl {
+ public:
+   impl(const std::wstring &id, const std::wstring &code)
+@@ -322,6 +723,13 @@ public:
+       m_com_handler->Release();
+       m_com_handler = nullptr;
+     }
++    if (m_webview && m_new_window_handler) {
++      m_webview->remove_NewWindowRequested(m_new_window_token);
++    }
++    if (m_new_window_handler) {
++      m_new_window_handler->Release();
++      m_new_window_handler = nullptr;
++    }
+     if (m_webview) {
+       m_webview->Release();
+       m_webview = nullptr;
+@@ -792,6 +1200,14 @@ private:
+       return error_info{WEBVIEW_ERROR_UNSPECIFIED,
+                         "put_IsStatusBarEnabled failed"};
+     }
++    // AppCore patch: take over window.open() popups (plain native window
++    // instead of the default popup with a browser address bar).
++    m_new_window_handler = new webview2_new_window_handler(m_window);
++    if (FAILED(m_webview->add_NewWindowRequested(m_new_window_handler,
++                                                 &m_new_window_token))) {
++      m_new_window_handler->Release();
++      m_new_window_handler = nullptr;
++    }
+     add_init_script("function(message) {\n\
+   return window.chrome.webview.postMessage(message);\n\
+ }");
+@@ -893,6 +1309,8 @@ private:
+   ICoreWebView2 *m_webview = nullptr;
+   ICoreWebView2Controller *m_controller = nullptr;
+   webview2_com_handler *m_com_handler = nullptr;
++  webview2_new_window_handler *m_new_window_handler = nullptr;
++  ::EventRegistrationToken m_new_window_token{};
+   mswebview2::loader m_webview2_loader;
+   int m_dpi{};
+   bool m_is_window_shown{};

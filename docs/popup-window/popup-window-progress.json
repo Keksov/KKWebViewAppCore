@@ -5,7 +5,7 @@
   "title": "popup-window: window.open() opens a plain native window (no browser address bar) — vendored webview patch",
   "status": "in-progress",
   "createdAt": "2026-07-13T16:00:00Z",
-  "updatedAt": "2026-07-13T16:00:00Z",
+  "updatedAt": "2026-07-13T16:40:00Z",
   "decisions": [
     {
       "id": "POP-D1",
@@ -17,7 +17,7 @@
     },
     {
       "id": "POP-D3",
-      "text": "Pinning the patch: webview/ is gitignored (pristine upstream), so the patched win32_edge.hh is force-added (git add -f; tracked files override ignore). All patch sites are marked with 'AppCore patch (KKMindWave panel-window...)' comments: popup classes after webview2_user_script_added_handler, the add_NewWindowRequested subscription in embed(), the removal + members in the engine. An upstream webview refresh must re-apply them."
+      "text": "Pinning the patch: webview/ is a NESTED git clone of upstream (own .git), so the outer repo cannot track its files (git add -f is a no-op). Pinned twice instead: (1) a commit on the appcore-patches branch INSIDE the nested webview repo (rebase over upstream on refresh); (2) docs/popup-window/win32_edge-newwindow.patch in the outer AppCore repo (git apply from webview/ if the clone is ever lost). All patch sites carry AppCore patch (KKMindWave panel-window...) comments."
     }
   ],
   "steps": [
@@ -47,7 +47,9 @@
       "phase": 1,
       "title": "Owner verification in MindWave exe: no address bar, round-trip behavior intact",
       "status": "todo",
-      "dependsOn": ["POP1.1"],
+      "dependsOn": [
+        "POP1.1"
+      ],
       "artifacts": [
         "restart MindWave AppMain.exe (self-update swaps in the new binaries), detach the file panel"
       ],

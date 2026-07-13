@@ -34,11 +34,17 @@ win32_edge.hh` (C++, а не Pascal: обработчик — полноценн
 
 ## Важно: закрепление патча
 
-`webview/` в `.gitignore` (чистый апстрим), поэтому патченный `win32_edge.hh` добавлен в git
-**принудительно** (`git add -f`) — tracked-файл перекрывает ignore. При обновлении вендоренного
-webview на новую версию апстрима патч нужно перенести (блок помечен комментарием
-`AppCore patch (KKMindWave panel-window...)` в трёх местах: классы после
-`webview2_user_script_added_handler`, подписка в `embed()`, отписка в деструкторе + члены).
+`webview/` — **вложенный git-клон апстрима** (webview/webview, есть свой `.git`), внешний репо
+его файлы трекать не может. Патч закреплён дважды:
+
+1. Во вложенном репо `webview/` — коммит на ветке **`appcore-patches`** (поверх master
+   апстрима). При обновлении апстрима: `git fetch` + rebase ветки.
+2. Копия диффа — [win32_edge-newwindow.patch](win32_edge-newwindow.patch) в этой папке
+   (внешний репо AppCore); при потере вложенного клона: `cd webview && git apply
+   ../docs/popup-window/win32_edge-newwindow.patch`.
+
+Все места патча помечены комментарием `AppCore patch (KKMindWave panel-window...)`: классы после
+`webview2_user_script_added_handler`, подписка в `embed()`, отписка в деструкторе + члены движка.
 
 ## Сборка / деплой
 
