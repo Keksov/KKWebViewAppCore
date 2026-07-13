@@ -1,8 +1,8 @@
 diff --git a/core/include/webview/detail/backends/win32_edge.hh b/core/include/webview/detail/backends/win32_edge.hh
-index 316a9d5..b066718 100644
+index 316a9d5..5dcaec1 100644
 --- a/core/include/webview/detail/backends/win32_edge.hh
 +++ b/core/include/webview/detail/backends/win32_edge.hh
-@@ -291,6 +291,407 @@ private:
+@@ -291,6 +291,412 @@ private:
    std::atomic<ULONG> m_ref_count{1};
  };
  
@@ -273,9 +273,14 @@ index 316a9d5..b066718 100644
 +    RECT frame{0, 0, width, height};
 +    AdjustWindowRect(&frame, WS_OVERLAPPEDWINDOW, FALSE);
 +
-+    CreateWindowExW(0, popup_class_name(), L"", WS_OVERLAPPEDWINDOW,
-+                    has_position ? left : CW_USEDEFAULT,
-+                    has_position ? top : CW_USEDEFAULT,
++    // features left/top are the desired CONTENT top-left (what the child persists via
++    // window.screenX/screenY). frame.left/top are the negative non-client margins, so offsetting
++    // by them lands the CONTENT — not the frame — at (left, top). This makes repeated
++    // detach/reopen drift-free: the child reads back exactly the screenX/screenY it saved.
++    int frameX = has_position ? (left + frame.left) : CW_USEDEFAULT;
++    int frameY = has_position ? (top + frame.top) : CW_USEDEFAULT;
++
++    CreateWindowExW(0, popup_class_name(), L"", WS_OVERLAPPEDWINDOW, frameX, frameY,
 +                    frame.right - frame.left, frame.bottom - frame.top,
 +                    nullptr, nullptr, hInstance, this);
 +    if (!m_hwnd) {
@@ -410,7 +415,7 @@ index 316a9d5..b066718 100644
  class user_script::impl {
  public:
    impl(const std::wstring &id, const std::wstring &code)
-@@ -322,6 +723,13 @@ public:
+@@ -322,6 +728,13 @@ public:
        m_com_handler->Release();
        m_com_handler = nullptr;
      }
@@ -424,7 +429,7 @@ index 316a9d5..b066718 100644
      if (m_webview) {
        m_webview->Release();
        m_webview = nullptr;
-@@ -792,6 +1200,14 @@ private:
+@@ -792,6 +1205,14 @@ private:
        return error_info{WEBVIEW_ERROR_UNSPECIFIED,
                          "put_IsStatusBarEnabled failed"};
      }
@@ -439,7 +444,7 @@ index 316a9d5..b066718 100644
      add_init_script("function(message) {\n\
    return window.chrome.webview.postMessage(message);\n\
  }");
-@@ -893,6 +1309,8 @@ private:
+@@ -893,6 +1314,8 @@ private:
    ICoreWebView2 *m_webview = nullptr;
    ICoreWebView2Controller *m_controller = nullptr;
    webview2_com_handler *m_com_handler = nullptr;

@@ -5,7 +5,7 @@
   "title": "popup-window: window.open() opens a plain native window (no browser address bar) — vendored webview patch",
   "status": "in-progress",
   "createdAt": "2026-07-13T16:00:00Z",
-  "updatedAt": "2026-07-13T16:40:00Z",
+  "updatedAt": "2026-07-13T21:00:00Z",
   "decisions": [
     {
       "id": "POP-D1",
@@ -30,7 +30,8 @@
       "artifacts": [
         "webview2_popup_event_handler<T>: tiny COM adapter for the (ICoreWebView2*, IUnknown*) events (DocumentTitleChanged / WindowCloseRequested)",
         "webview2_popup_window: bare WS_OVERLAPPEDWINDOW (title bar only), controller from the opener's environment, GetDeferral + put_NewWindow + put_Handled(TRUE); WindowFeatures size/pos honored (AdjustWindowRect for content-size); document.title -> caption; window.close() -> DestroyWindow; WM_SIZE -> put_Bounds; WM_DESTROY -> controller Close + release; icons inherited from the opener (WM_GETICON); apply_window_theme on the popup",
-        "webview2_new_window_handler subscribed in embed() after settings; removed + released in the engine destructor"
+        "webview2_new_window_handler subscribed in embed() after settings; removed + released in the engine destructor",
+        "PW4.1 geometry follow-up: features left/top are treated as the desired CONTENT top-left; the frame is offset by the non-client margins (frame.left/top from AdjustWindowRect) so the content lands there — repeated detach/reopen is drift-free (the child persists/reads window.screenX/screenY)"
       ],
       "verify": "build_webview.bat + build_app.bat compile clean; manual: MindWave detach opens a window WITHOUT an address bar; title/icon correct; close/geometry/BroadcastChannel behavior unchanged",
       "startedAt": "2026-07-13T16:00:00Z",
@@ -39,7 +40,8 @@
       "evidence": [
         "build_webview.bat: [2/2] Linking CXX shared library core/libwebview.dll — success (2026-07-13)",
         "build_app.bat: Build successful: build/win_x64/bin/AppMain.exe; deployed to KKLeftRight + SoundTrainer; MindWaveCore/server copy skipped (AppMain.exe running) — ExeAutoUpdate picks it up on next launch",
-        "owner manual verification pending (POP1.2)"
+        "owner manual verification pending (POP1.2)",
+        "rebuilt for PW4.1 drift-free positioning (2026-07-13): build_webview.bat + build_app.bat clean; MindWaveCore/server copy again blocked by the running exe (ExeAutoUpdate on next launch)"
       ]
     },
     {
