@@ -3,9 +3,9 @@
   "plan": "popup-window",
   "planDoc": "docs/popup-window/popup-window-plan.md",
   "title": "popup-window: window.open() opens a plain native window (no browser address bar) — vendored webview patch",
-  "status": "in-progress",
+  "status": "done",
   "createdAt": "2026-07-13T16:00:00Z",
-  "updatedAt": "2026-07-13T21:00:00Z",
+  "updatedAt": "2026-07-13T21:30:00Z",
   "decisions": [
     {
       "id": "POP-D1",
@@ -48,7 +48,7 @@
       "id": "POP1.2",
       "phase": 1,
       "title": "Owner verification in MindWave exe: no address bar, round-trip behavior intact",
-      "status": "todo",
+      "status": "done",
       "dependsOn": [
         "POP1.1"
       ],
@@ -56,10 +56,12 @@
         "restart MindWave AppMain.exe (self-update swaps in the new binaries), detach the file panel"
       ],
       "verify": "child window has NO address bar (title bar only, MindWave icon, document.title caption); file picks still open in the main editor; closing main closes the child; closing the child returns the panel",
-      "startedAt": null,
-      "finishedAt": null,
+      "startedAt": "2026-07-13T21:20:00Z",
+      "finishedAt": "2026-07-13T21:30:00Z",
       "blockedReason": null,
-      "evidence": []
+      "evidence": [
+        "owner verified in MindWave exe (2026-07-13): popup has no address bar, correct icon/caption, file round-trip + close semantics + drift-free geometry all good — \"Всё работает как и ожидалось\""
+      ]
     }
   ]
 }
