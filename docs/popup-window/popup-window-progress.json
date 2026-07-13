@@ -1,0 +1,61 @@
+{
+  "schemaVersion": 1,
+  "plan": "popup-window",
+  "planDoc": "docs/popup-window/popup-window-plan.md",
+  "title": "popup-window: window.open() opens a plain native window (no browser address bar) — vendored webview patch",
+  "status": "in-progress",
+  "createdAt": "2026-07-13T16:00:00Z",
+  "updatedAt": "2026-07-13T16:00:00Z",
+  "decisions": [
+    {
+      "id": "POP-D1",
+      "text": "Patch the vendored webview C++ backend (win32_edge.hh), not Pascal. A NewWindowRequested handler must be a real COM object plus a second CreateCoreWebView2Controller round-trip; with the official WebView2.h already fetched by the build this is ~350 lines of natural C++, while a raw-vtable Pascal implementation (the AppMain.openDevTools trick) would need hand-built COM objects, IIDs and interface layouts — bigger and more brittle. Requested by/for KKMindWave panel-window PW4.2 (owner confirmed the default popup shows an address bar in the exe, 2026-07-13)."
+    },
+    {
+      "id": "POP-D2",
+      "text": "The popup controller is created from the SAME ICoreWebView2Environment (ICoreWebView2_2::get_Environment of the opener) — same user-data folder and same browser process, so BroadcastChannel/localStorage/window.close() between opener and popup keep working exactly as with the default popup. On any early takeover failure (e.g. no ICoreWebView2_2 on an ancient runtime) the request is left unhandled and the default popup (with its address bar) still opens — a degraded window beats a lost one."
+    },
+    {
+      "id": "POP-D3",
+      "text": "Pinning the patch: webview/ is gitignored (pristine upstream), so the patched win32_edge.hh is force-added (git add -f; tracked files override ignore). All patch sites are marked with 'AppCore patch (KKMindWave panel-window...)' comments: popup classes after webview2_user_script_added_handler, the add_NewWindowRequested subscription in embed(), the removal + members in the engine. An upstream webview refresh must re-apply them."
+    }
+  ],
+  "steps": [
+    {
+      "id": "POP1.1",
+      "phase": 1,
+      "title": "win32_edge.hh: webview2_popup_window + webview2_new_window_handler + engine wiring",
+      "status": "done",
+      "dependsOn": [],
+      "artifacts": [
+        "webview2_popup_event_handler<T>: tiny COM adapter for the (ICoreWebView2*, IUnknown*) events (DocumentTitleChanged / WindowCloseRequested)",
+        "webview2_popup_window: bare WS_OVERLAPPEDWINDOW (title bar only), controller from the opener's environment, GetDeferral + put_NewWindow + put_Handled(TRUE); WindowFeatures size/pos honored (AdjustWindowRect for content-size); document.title -> caption; window.close() -> DestroyWindow; WM_SIZE -> put_Bounds; WM_DESTROY -> controller Close + release; icons inherited from the opener (WM_GETICON); apply_window_theme on the popup",
+        "webview2_new_window_handler subscribed in embed() after settings; removed + released in the engine destructor"
+      ],
+      "verify": "build_webview.bat + build_app.bat compile clean; manual: MindWave detach opens a window WITHOUT an address bar; title/icon correct; close/geometry/BroadcastChannel behavior unchanged",
+      "startedAt": "2026-07-13T16:00:00Z",
+      "finishedAt": "2026-07-13T16:20:00Z",
+      "blockedReason": null,
+      "evidence": [
+        "build_webview.bat: [2/2] Linking CXX shared library core/libwebview.dll — success (2026-07-13)",
+        "build_app.bat: Build successful: build/win_x64/bin/AppMain.exe; deployed to KKLeftRight + SoundTrainer; MindWaveCore/server copy skipped (AppMain.exe running) — ExeAutoUpdate picks it up on next launch",
+        "owner manual verification pending (POP1.2)"
+      ]
+    },
+    {
+      "id": "POP1.2",
+      "phase": 1,
+      "title": "Owner verification in MindWave exe: no address bar, round-trip behavior intact",
+      "status": "todo",
+      "dependsOn": ["POP1.1"],
+      "artifacts": [
+        "restart MindWave AppMain.exe (self-update swaps in the new binaries), detach the file panel"
+      ],
+      "verify": "child window has NO address bar (title bar only, MindWave icon, document.title caption); file picks still open in the main editor; closing main closes the child; closing the child returns the panel",
+      "startedAt": null,
+      "finishedAt": null,
+      "blockedReason": null,
+      "evidence": []
+    }
+  ]
+}
