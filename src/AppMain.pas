@@ -20,6 +20,13 @@ const
     IDM_TOGGLE_MODE = $A010;   // toggle Kiosk <-> Normal
     IDM_DEVTOOLS    = $A020;   // open DevTools (dev mode only, WN-D8)
 
+    // Graceful close (owner, 2026-08-10: «крестик это самое главное»). The web UI keeps a few
+    // hundred milliseconds of unwritten work — the edit journal and the file itself are written on
+    // a debounce — so the window must ASK the page to finish before it goes away. Closing straight
+    // away lost both the journal entry and the edit itself (measured in MindWaveCore, F-0014).
+    EXIT_TIMER_ID = 909;       // WM_TIMER id for the backstop below
+    EXIT_WAIT_MS  = 7000;      // hung or crashed page must never keep the window alive forever
+
 var
     wnd: HWND;
     i: Integer;
@@ -38,6 +45,8 @@ var
     gDevMode: Boolean;        // dev config: enables DevTools + the bar button
     gWindowMode: TWindowMode; // current display mode (kiosk/normal), runtime-switchable
     gBarBuilt: Boolean;       // the control bar has been created at least once
+    gPrevMainProc: PtrInt;    // original WebView2 window proc (subclassed for a graceful close)
+    gClosing: Boolean;        // a graceful close is already under way — do not ask the UI twice
     useServices: Boolean;
     useFullScreen: Boolean;
     fullScreenForced: Boolean;
@@ -100,7 +109,59 @@ end;
 *******************************************************************************}
 procedure handleExit(const aSeq: PAnsiChar; const aReq: PAnsiChar; aArg: Pointer); cdecl;
 begin
+    // The page says it is done (its own «Выход», or the answer to askPageToFinish below): the
+    // backstop timer is no longer needed.
+    KillTimer(gMainWnd, EXIT_TIMER_ID);
     webview_terminate(PWebView(aArg));
+end;
+
+{*******************************************************************************
+* askPageToFinish
+* Hands the close over to the web UI: it flushes whatever it has not written yet (the edit
+* journal, the file itself) and then calls window.__appcoreExit(), which terminates the loop
+* above. A page that does not implement the hook — or throws on the way — exits at once, so an
+* older or broken UI can never make the window unclosable. The WM_TIMER backstop covers the
+* remaining case: a page that took the hook and never came back.
+*******************************************************************************}
+procedure askPageToFinish;
+const
+    JS =
+        '(function(){try{' +
+        'if(window.__appcoreRequestExit){window.__appcoreRequestExit();}' +
+        'else{window.__appcoreExit&&window.__appcoreExit();}' +
+        '}catch(e){window.__appcoreExit&&window.__appcoreExit();}})()';
+begin
+    SetTimer(gMainWnd, EXIT_TIMER_ID, EXIT_WAIT_MS, nil);
+    webview_eval(gWebView, PAnsiChar(UTF8String(JS)));
+end;
+
+{*******************************************************************************
+* mainWndProc
+* Subclass of the WebView2 window: turns the X (and Alt+F4, and the system menu — they all
+* arrive as WM_CLOSE) into a graceful close. Owner, 2026-08-10: «крестик это самое главное».
+*******************************************************************************}
+function mainWndProc(aWnd: HWND; aMsg: UINT; aWParam: WPARAM; aLParam: LPARAM): LRESULT; stdcall;
+begin
+    case aMsg of
+        WM_CLOSE:
+            if not gClosing then
+            begin
+                gClosing := True;
+                askPageToFinish;
+                Result := 0;                // swallow THIS close; the page answers with a terminate
+                Exit;
+            end;
+        WM_TIMER:
+            if aWParam = EXIT_TIMER_ID then
+            begin
+                // The page never answered (hung, crashed, or has no hook): close anyway.
+                KillTimer(aWnd, EXIT_TIMER_ID);
+                webview_terminate(gWebView);
+                Result := 0;
+                Exit;
+            end;
+    end;
+    Result := CallWindowProcW(TFNWndProc(Pointer(gPrevMainProc)), aWnd, aMsg, aWParam, aLParam);
 end;
 
 {*******************************************************************************
@@ -677,6 +738,11 @@ begin
     gWebView := w;
     wnd := HWND(webview_get_window(w));
     gMainWnd := wnd;
+
+    // Graceful close: the X, Alt+F4 and the system menu all arrive here as WM_CLOSE, and the page
+    // needs a moment to finish writing before the window goes away (owner, 2026-08-10).
+    gClosing := False;
+    gPrevMainProc := SetWindowLongPtrW(wnd, GWL_WNDPROC, LONG_PTR(PtrInt(@mainWndProc)));
 
     if brandTitle <> '' then
         webview_set_title(w, PAnsiChar(toUtf8(brandTitle)))
