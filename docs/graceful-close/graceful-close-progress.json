@@ -3,9 +3,9 @@
   "plan": "graceful-close",
   "planDoc": "docs/graceful-close/graceful-close-plan.md",
   "title": "graceful-close: крестик спрашивает страницу дописать незаконченное и только потом гасит окно",
-  "status": "active",
+  "status": "done",
   "createdAt": "2026-08-10T09:40:00Z",
-  "updatedAt": "2026-08-10T10:20:00Z",
+  "updatedAt": "2026-08-10T12:00:00Z",
   "decisions": [
     {
       "id": "GC-D1",
@@ -31,7 +31,9 @@
       "title": "Подкласс главного окна: WM_CLOSE -> запрос странице, WM_TIMER -> предохранитель",
       "status": "done",
       "dependsOn": [],
-      "artifacts": ["src/AppMain.pas"],
+      "artifacts": [
+        "src/AppMain.pas"
+      ],
       "verify": "build_app.bat собирает без ошибок",
       "evidence": [
         "Добавлены askPageToFinish (eval с тремя ветками: хук есть / хука нет / исключение), mainWndProc (WM_CLOSE + WM_TIMER) и подкласс через SetWindowLongPtrW сразу после webview_get_window. handleExit снимает таймер: страница ответила — предохранитель не нужен."
@@ -42,8 +44,12 @@
       "phase": 1,
       "title": "Сборка и раскладка в MindWaveCore/server",
       "status": "done",
-      "dependsOn": ["GC1.1"],
-      "artifacts": ["build/win_x64/bin/AppMain.exe"],
+      "dependsOn": [
+        "GC1.1"
+      ],
+      "artifacts": [
+        "build/win_x64/bin/AppMain.exe"
+      ],
       "verify": "Build successful + deploy",
       "evidence": [
         "build_app.bat: «Build successful», разложено в KKLeftRight/server, SoundTrainer/server и KKMindWave/MindWaveCore/server — владелец получает исправленный exe там, где запускает MindWave."
@@ -53,11 +59,15 @@
       "id": "GC2.1",
       "phase": 2,
       "title": "PAUSE: живая приёмка владельцем (правка -> крестик -> повторное открытие)",
-      "status": "pending",
-      "dependsOn": ["GC1.2"],
+      "status": "done",
+      "dependsOn": [
+        "GC1.2"
+      ],
       "artifacts": [],
       "verify": "владелец ответил",
-      "evidence": []
+      "evidence": [
+        "Владелец проверил живьём в MindWave и принял (2026-08-10, приёмка П4-бис): правка → сразу крестик → после повторного открытия правка есть и в файле, и в журнале."
+      ]
     }
   ],
   "log": [
