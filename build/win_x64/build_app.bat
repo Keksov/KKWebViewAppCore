@@ -67,6 +67,7 @@ rem (overlay-safe). Add a new project by copying one of these blocks with its se
 set "DEP1=%~dp0..\..\..\KKLeftRight\server"
 set "DEP2=%~dp0..\..\..\SoundTrainer\server"
 set "DEP3=%~dp0..\..\..\..\KKMindWave\MindWaveCore\server"
+set "DEP4=%~dp0..\..\..\..\EchoScript\control-panel\server"
 
 if exist "%DEP1%\" (
     echo Deploying to KKLeftRight\server ...
@@ -93,6 +94,15 @@ if exist "%DEP3%\" (
     if exist "%DEP3%\AppCore.ico" if exist bin\IconStamp.exe bin\IconStamp.exe "%DEP3%\AppMain.exe" "%DEP3%\AppCore.ico"
 ) else (
     echo Skip - not found: %DEP3%
+)
+
+if exist "%DEP4%\" (
+    echo Deploying to EchoScript\control-panel\server ...
+    copy /Y bin\AppMain.exe "%DEP4%\" >nul
+    copy /Y bin\libwebview.dll "%DEP4%\" >nul
+    if exist "%DEP4%\AppCore.ico" if exist bin\IconStamp.exe bin\IconStamp.exe "%DEP4%\AppMain.exe" "%DEP4%\AppCore.ico"
+) else (
+    echo Skip - not found: %DEP4%
 )
 
 popd
