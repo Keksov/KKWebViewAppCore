@@ -1,8 +1,26 @@
 diff --git a/core/include/webview/detail/backends/win32_edge.hh b/core/include/webview/detail/backends/win32_edge.hh
-index 316a9d5..5dcaec1 100644
+index 316a9d5..e3646ac 100644
 --- a/core/include/webview/detail/backends/win32_edge.hh
 +++ b/core/include/webview/detail/backends/win32_edge.hh
-@@ -291,6 +291,412 @@ private:
+@@ -55,11 +55,17 @@
+ #include "../user_script.hh"
+ #include "../utility/string.hh"
+ 
++#include <algorithm>
+ #include <atomic>
++#include <cstdio>
+ #include <cstdlib>
++#include <cwchar>
++#include <cwctype>
+ #include <functional>
+ #include <list>
++#include <map>
+ #include <memory>
++#include <string>
+ #include <utility>
+ 
+ #ifndef WIN32_LEAN_AND_MEAN
+@@ -291,6 +297,697 @@ private:
    std::atomic<ULONG> m_ref_count{1};
  };
  
@@ -57,6 +75,191 @@ index 316a9d5..5dcaec1 100644
 +  IID m_iid;
 +  std::function<void()> m_cb;
 +  std::atomic<ULONG> m_ref_count{1};
++};
++
++// AppCore patch (translab detached panel, owner bug 2026-10-15): a NAMED popup
++// (window.open(url, 'tl-panel-orig', ...)) remembers its own NATIVE placement
++// and reopens there, ignoring the features left/top/width/height.
++// Why not the features: the page persists window.screenX/innerWidth in
++// Chromium DIPs, while this (Per-Monitor-V2) process places windows in physical
++// pixels. With mixed scaling (primary 3072px @125%, second monitor at physical
++// x=3072 @100%) the second monitor starts at DIP x=2458, so a window saved
++// there reopened at physical x=2458 — straddling both monitors. A maximized
++// state cannot travel through window.open features at all.
++// Stored next to the exe as AppCore.popups (like AppCore.window), otherwise in
++// %TEMP% under a name derived from the exe path:
++//   <name>=<l t r b> <0|1>   rcNormalPosition (workspace coords) + maximized
++class popup_placement_store {
++public:
++  struct entry {
++    RECT normal{};
++    bool maximized{};
++  };
++
++  // Only plain names get a memory; '_blank' / '' / exotic names keep the old
++  // features-driven placement.
++  static bool valid_name(const std::wstring &name) {
++    if (name.empty() || name.size() > 64 || name[0] == L'_') {
++      return false;
++    }
++    for (wchar_t c : name) {
++      bool ok = (c >= L'a' && c <= L'z') || (c >= L'A' && c <= L'Z') ||
++                (c >= L'0' && c <= L'9') || c == L'-' || c == L'_' ||
++                c == L'.';
++      if (!ok) {
++        return false;
++      }
++    }
++    return true;
++  }
++
++  static bool load(const std::wstring &name, entry &out) {
++    auto all = read_all();
++    auto it = all.find(narrow(name));
++    if (it == all.end()) {
++      return false;
++    }
++    out = it->second;
++    return true;
++  }
++
++  static void save(const std::wstring &name, const entry &e) {
++    auto all = read_all();
++    all[narrow(name)] = e;
++    std::string text;
++    for (const auto &kv : all) {
++      char line[160];
++      std::snprintf(line, sizeof(line), "%s=%ld %ld %ld %ld %d\n",
++                    kv.first.c_str(), kv.second.normal.left,
++                    kv.second.normal.top, kv.second.normal.right,
++                    kv.second.normal.bottom, kv.second.maximized ? 1 : 0);
++      text += line;
++    }
++    if (!write_file(exe_dir_path(), text)) {
++      write_file(temp_path(), text);
++    }
++  }
++
++  // Workspace coordinates (rcNormalPosition) are screen coordinates shifted by
++  // the primary monitor's taskbar (non-zero only with a left/top taskbar).
++  static POINT workspace_offset() {
++    MONITORINFO mi{};
++    mi.cbSize = sizeof(mi);
++    HMONITOR primary = MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY);
++    if (!GetMonitorInfoW(primary, &mi)) {
++      return POINT{0, 0};
++    }
++    return POINT{mi.rcWork.left - mi.rcMonitor.left,
++                 mi.rcWork.top - mi.rcMonitor.top};
++  }
++
++  // A remembered rect is reused only while a monitor still shows a grabbable
++  // part of it (a disconnected monitor falls back to the features).
++  static bool on_screen(const RECT &screen_rect) {
++    if (screen_rect.right - screen_rect.left < 100 ||
++        screen_rect.bottom - screen_rect.top < 100) {
++      return false;
++    }
++    HMONITOR mon = MonitorFromRect(&screen_rect, MONITOR_DEFAULTTONULL);
++    MONITORINFO mi{};
++    mi.cbSize = sizeof(mi);
++    if (!mon || !GetMonitorInfoW(mon, &mi)) {
++      return false;
++    }
++    RECT seen{};
++    if (!IntersectRect(&seen, &screen_rect, &mi.rcWork)) {
++      return false;
++    }
++    return seen.right - seen.left >= 120 && seen.bottom - seen.top >= 60;
++  }
++
++private:
++  // valid_name() guarantees ASCII.
++  static std::string narrow(const std::wstring &s) {
++    std::string r;
++    for (wchar_t c : s) {
++      r += static_cast<char>(c);
++    }
++    return r;
++  }
++
++  static std::wstring exe_path() {
++    wchar_t buf[MAX_PATH * 2]{};
++    DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH * 2);
++    return std::wstring(buf, n);
++  }
++
++  static std::wstring exe_dir_path() {
++    auto exe = exe_path();
++    auto slash = exe.find_last_of(L"\\/");
++    auto dir = slash == std::wstring::npos ? std::wstring() : exe.substr(0, slash + 1);
++    return dir + L"AppCore.popups";
++  }
++
++  static std::wstring temp_path() {
++    wchar_t buf[MAX_PATH + 1]{};
++    DWORD n = GetTempPathW(MAX_PATH + 1, buf);
++    unsigned long hash = 2166136261UL; // FNV-1a over the lower-cased exe path
++    for (wchar_t c : exe_path()) {
++      hash = (hash ^ static_cast<unsigned long>(towlower(c))) * 16777619UL;
++      hash &= 0xFFFFFFFFUL;
++    }
++    wchar_t suffix[16];
++    std::swprintf(suffix, 16, L"%08lx", hash);
++    return std::wstring(buf, n) + L"AppCore.popups." + suffix;
++  }
++
++  static bool read_file(const std::wstring &path, std::string &out) {
++    FILE *f = _wfopen(path.c_str(), L"rb");
++    if (!f) {
++      return false;
++    }
++    char chunk[4096];
++    size_t got;
++    while ((got = std::fread(chunk, 1, sizeof(chunk), f)) > 0) {
++      out.append(chunk, got);
++    }
++    std::fclose(f);
++    return true;
++  }
++
++  static bool write_file(const std::wstring &path, const std::string &text) {
++    FILE *f = _wfopen(path.c_str(), L"wb");
++    if (!f) {
++      return false;
++    }
++    bool ok = std::fwrite(text.data(), 1, text.size(), f) == text.size();
++    return std::fclose(f) == 0 && ok;
++  }
++
++  static std::map<std::string, entry> read_all() {
++    std::map<std::string, entry> all;
++    std::string text;
++    if (!read_file(exe_dir_path(), text) && !read_file(temp_path(), text)) {
++      return all;
++    }
++    size_t pos = 0;
++    while (pos < text.size()) {
++      size_t eol = text.find('\n', pos);
++      std::string line = text.substr(pos, eol == std::string::npos ? std::string::npos : eol - pos);
++      pos = eol == std::string::npos ? text.size() : eol + 1;
++      size_t eq = line.find('=');
++      if (eq == std::string::npos || eq == 0) {
++        continue;
++      }
++      entry e;
++      long l, t, r, b;
++      int maximized;
++      if (std::sscanf(line.c_str() + eq + 1, "%ld %ld %ld %ld %d", &l, &t, &r, &b,
++                      &maximized) != 5) {
++        continue;
++      }
++      e.normal = RECT{l, t, r, b};
++      e.maximized = maximized != 0;
++      all[line.substr(0, eq)] = e;
++    }
++    return all;
++  }
 +};
 +
 +// One popup window: a bare WS_OVERLAPPEDWINDOW whose client area is filled by
@@ -169,7 +372,8 @@ index 316a9d5..5dcaec1 100644
 +    complete_request();
 +    resize_webview();
 +    m_controller->put_IsVisible(TRUE);
-+    ShowWindow(m_hwnd, SW_SHOW);
++    ShowWindow(m_hwnd, m_show_cmd);
++    m_shown = true;
 +    UpdateWindow(m_hwnd);
 +    m_controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
 +    return S_OK;
@@ -213,6 +417,21 @@ index 316a9d5..5dcaec1 100644
 +          switch (msg) {
 +          case WM_SIZE:
 +            w->resize_webview();
++            if (!w->m_in_sizemove && wp != SIZE_MINIMIZED) {
++              w->remember_placement(); // maximize/restore, snap
++            }
++            break;
++          case WM_MOVE:
++            if (!w->m_in_sizemove) {
++              w->remember_placement(); // Win+Shift+Arrow and friends
++            }
++            break;
++          case WM_ENTERSIZEMOVE:
++            w->m_in_sizemove = true;
++            break;
++          case WM_EXITSIZEMOVE:
++            w->m_in_sizemove = false;
++            w->remember_placement();
 +            break;
 +          case WM_CLOSE:
 +            DestroyWindow(hwnd);
@@ -224,6 +443,7 @@ index 316a9d5..5dcaec1 100644
 +            }
 +            break;
 +          case WM_DESTROY:
++            w->remember_placement();
 +            SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
 +            w->m_hwnd = nullptr;
 +            w->cleanup();
@@ -279,10 +499,42 @@ index 316a9d5..5dcaec1 100644
 +    // detach/reopen drift-free: the child reads back exactly the screenX/screenY it saved.
 +    int frameX = has_position ? (left + frame.left) : CW_USEDEFAULT;
 +    int frameY = has_position ? (top + frame.top) : CW_USEDEFAULT;
++    int frameW = frame.right - frame.left;
++    int frameH = frame.bottom - frame.top;
++
++    // A named popup reopens where it was last left (physical px, maximized
++    // included) — see popup_placement_store.
++    ICoreWebView2NewWindowRequestedEventArgs2 *args2 = nullptr;
++    if (SUCCEEDED(args->QueryInterface(IID_ICoreWebView2NewWindowRequestedEventArgs2,
++                                       reinterpret_cast<void **>(&args2))) &&
++        args2) {
++      LPWSTR name = nullptr;
++      if (SUCCEEDED(args2->get_Name(&name)) && name) {
++        if (popup_placement_store::valid_name(name)) {
++          m_name = name;
++        }
++        CoTaskMemFree(name);
++      }
++      args2->Release();
++    }
++    popup_placement_store::entry saved;
++    if (!m_name.empty() && popup_placement_store::load(m_name, saved)) {
++      POINT off = popup_placement_store::workspace_offset();
++      RECT screen_rect = saved.normal;
++      OffsetRect(&screen_rect, off.x, off.y);
++      if (popup_placement_store::on_screen(screen_rect)) {
++        frameX = screen_rect.left;
++        frameY = screen_rect.top;
++        frameW = screen_rect.right - screen_rect.left;
++        frameH = screen_rect.bottom - screen_rect.top;
++        m_show_cmd = saved.maximized ? SW_SHOWMAXIMIZED : SW_SHOWNORMAL;
++        m_last_saved = saved;
++        m_has_last_saved = true;
++      }
++    }
 +
 +    CreateWindowExW(0, popup_class_name(), L"", WS_OVERLAPPEDWINDOW, frameX, frameY,
-+                    frame.right - frame.left, frame.bottom - frame.top,
-+                    nullptr, nullptr, hInstance, this);
++                    frameW, frameH, nullptr, nullptr, hInstance, this);
 +    if (!m_hwnd) {
 +      return false;
 +    }
@@ -348,6 +600,51 @@ index 316a9d5..5dcaec1 100644
 +    }
 +  }
 +
++  // Captures the settled placement of a named popup (see popup_placement_store).
++  void remember_placement() {
++    if (!m_hwnd || !m_shown || m_name.empty()) {
++      return;
++    }
++    WINDOWPLACEMENT wp{};
++    wp.length = sizeof(wp);
++    if (!GetWindowPlacement(m_hwnd, &wp)) {
++      return;
++    }
++    popup_placement_store::entry e;
++    e.normal = wp.rcNormalPosition;
++    bool iconic = IsIconic(m_hwnd) != FALSE;
++    e.maximized = iconic ? (wp.flags & WPF_RESTORETOMAXIMIZED) != 0
++                         : IsZoomed(m_hwnd) != FALSE;
++    if (e.maximized && !iconic) {
++      // SW_SHOWMAXIMIZED maximizes onto the monitor of the NORMAL rect; after
++      // Win+Shift+Arrow that rect can still sit on the old monitor — pull it
++      // onto the monitor the window is maximized on.
++      POINT off = popup_placement_store::workspace_offset();
++      RECT screen_rect = e.normal;
++      OffsetRect(&screen_rect, off.x, off.y);
++      HMONITOR target = MonitorFromWindow(m_hwnd, MONITOR_DEFAULTTONEAREST);
++      MONITORINFO mi{};
++      mi.cbSize = sizeof(mi);
++      if (MonitorFromRect(&screen_rect, MONITOR_DEFAULTTONEAREST) != target &&
++          GetMonitorInfoW(target, &mi)) {
++        LONG workW = mi.rcWork.right - mi.rcWork.left;
++        LONG workH = mi.rcWork.bottom - mi.rcWork.top;
++        LONG w = (std::min)(screen_rect.right - screen_rect.left, workW);
++        LONG h = (std::min)(screen_rect.bottom - screen_rect.top, workH);
++        LONG x = mi.rcWork.left + (workW - w) / 2;
++        LONG y = mi.rcWork.top + (workH - h) / 2;
++        e.normal = RECT{x - off.x, y - off.y, x + w - off.x, y + h - off.y};
++      }
++    }
++    if (m_has_last_saved && EqualRect(&e.normal, &m_last_saved.normal) &&
++        e.maximized == m_last_saved.maximized) {
++      return;
++    }
++    popup_placement_store::save(m_name, e);
++    m_last_saved = e;
++    m_has_last_saved = true;
++  }
++
 +  void update_title() {
 +    if (!m_webview || !m_hwnd) {
 +      return;
@@ -365,6 +662,12 @@ index 316a9d5..5dcaec1 100644
 +  ICoreWebView2 *m_webview = nullptr;
 +  ICoreWebView2NewWindowRequestedEventArgs *m_args = nullptr;
 +  ICoreWebView2Deferral *m_deferral = nullptr;
++  std::wstring m_name;           // window.open target name; '' = no memory
++  int m_show_cmd = SW_SHOW;
++  bool m_shown = false;          // creation-time WM_SIZE/WM_MOVE are not saved
++  bool m_in_sizemove = false;    // drag/resize in progress: save on exit only
++  popup_placement_store::entry m_last_saved;
++  bool m_has_last_saved = false;
 +  std::atomic<ULONG> m_ref_count{1};
 +};
 +
@@ -415,7 +718,7 @@ index 316a9d5..5dcaec1 100644
  class user_script::impl {
  public:
    impl(const std::wstring &id, const std::wstring &code)
-@@ -322,6 +728,13 @@ public:
+@@ -322,6 +1019,13 @@ public:
        m_com_handler->Release();
        m_com_handler = nullptr;
      }
@@ -429,7 +732,7 @@ index 316a9d5..5dcaec1 100644
      if (m_webview) {
        m_webview->Release();
        m_webview = nullptr;
-@@ -792,6 +1205,14 @@ private:
+@@ -792,6 +1496,14 @@ private:
        return error_info{WEBVIEW_ERROR_UNSPECIFIED,
                          "put_IsStatusBarEnabled failed"};
      }
@@ -444,7 +747,7 @@ index 316a9d5..5dcaec1 100644
      add_init_script("function(message) {\n\
    return window.chrome.webview.postMessage(message);\n\
  }");
-@@ -893,6 +1314,8 @@ private:
+@@ -893,6 +1605,8 @@ private:
    ICoreWebView2 *m_webview = nullptr;
    ICoreWebView2Controller *m_controller = nullptr;
    webview2_com_handler *m_com_handler = nullptr;
